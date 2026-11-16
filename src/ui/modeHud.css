@@ -1,0 +1,55 @@
+body.mode-hud-on .hud-message {
+  top: 38%;
+}
+
+.mode-panel {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(560px, 70vw);
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.45;
+  zoom: var(--hud-scale, 1);
+}
+
+.mode-title {
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #fff;
+}
+
+.mode-title .mode-badge,
+.mode-badge {
+  color: #ffd27a;
+}
+
+.mode-body .mode-objective {
+  opacity: 0.85;
+}
+
+.mode-body .mode-prompt {
+  margin-top: 4px;
+  color: #fff;
+  font-size: 16px;
+}
+
+.mode-body .mode-pad {
+  opacity: 0.75;
+  font-size: 13px;
+}
+
+.mode-body .mode-foot {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.mode-body .mode-big {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mode-body .mode-warn {
+  color: #ff8a3d;
+}

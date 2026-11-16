@@ -1,0 +1,383 @@
+.hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Consolas', 'Menlo', monospace;
+  color: #b8ffcf;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+  user-select: none;
+}
+
+.hud kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 1px 6px;
+  border: 1px solid rgba(184, 255, 207, 0.6);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  text-align: center;
+  font-family: inherit;
+}
+
+.hud-panel {
+  position: absolute;
+  background: rgba(0, 20, 10, 0.35);
+  border: 1px solid rgba(184, 255, 207, 0.25);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.hud-instruments {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.hud-instruments .hud-panel {
+  position: static;
+}
+
+.hud-left {
+  min-width: 170px;
+}
+
+/* Compact instruments: speed, AGL, health, throttle and gear/brake only. */
+.hud.compact .hud-detail {
+  display: none;
+}
+
+.hud.compact .hud-throttle-bar {
+  height: 104px;
+}
+
+/* Short windows: two columns of instrument rows. */
+.hud.wrap .hud-rows {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 14px;
+}
+
+.hud.wrap .hud-row {
+  min-width: 150px;
+}
+
+.hud-row {
+  display: grid;
+  grid-template-columns: 3.2em 1fr 2.6em;
+  align-items: baseline;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.hud-row span {
+  opacity: 0.7;
+}
+
+.hud-row b {
+  text-align: right;
+  font-size: 18px;
+  padding-right: 6px;
+}
+
+.hud-row i {
+  font-style: normal;
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+.hud-flags {
+  margin-top: 4px;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.hud-flags span {
+  opacity: 0.25;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+}
+
+.hud-flags span.on {
+  opacity: 1;
+  color: #ffcf4a;
+}
+
+.hud-row b.low {
+  color: #ffcf4a;
+}
+
+.hud-throttle {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.hud-throttle-bar {
+  position: relative;
+  width: 16px;
+  height: 160px;
+  border: 1px solid rgba(184, 255, 207, 0.5);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.hud-throttle-bar div {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #59e68a;
+}
+
+.hud-throttle-bar div.ab {
+  background: linear-gradient(#ff6a00, #ffcf4a);
+}
+
+.hud-throttle-label {
+  font-size: 15px;
+}
+
+.hud-ab {
+  color: #ff8a3d;
+  font-weight: bold;
+  visibility: hidden;
+}
+
+.hud-ab.visible {
+  visibility: visible;
+}
+
+.hud-top {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 24px;
+  font-size: 15px;
+}
+
+.hud-top b {
+  font-size: 17px;
+}
+
+.hud-warnings {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+.hud-warn {
+  display: none;
+  font-size: 34px;
+  font-weight: bold;
+  letter-spacing: 4px;
+  padding: 4px 18px;
+  margin-bottom: 8px;
+  border: 2px solid currentColor;
+  animation: hud-blink 0.5s steps(2) infinite;
+}
+
+.hud-warn.visible {
+  display: block;
+}
+
+.hud-pullup {
+  color: #ff3b3b;
+}
+
+.hud-stall {
+  color: #ffcf4a;
+}
+
+@keyframes hud-blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+.hud-center {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 44px;
+  font-weight: bold;
+  letter-spacing: 6px;
+  text-align: center;
+  color: #fff;
+}
+
+.hud-center small {
+  display: block;
+  font-size: 18px;
+  letter-spacing: 1px;
+  font-weight: normal;
+  margin-top: 6px;
+}
+
+.hud-message {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 24px;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.hud-message.visible {
+  opacity: 1;
+}
+
+.hud-bottom-right {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.hud-help {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 15, 8, 0.82);
+  border: 1px solid rgba(184, 255, 207, 0.4);
+  border-radius: 10px;
+  padding: 18px 26px;
+  max-width: 520px;
+  color: #dfffe9;
+}
+
+.hud-help.hidden {
+  display: none;
+}
+
+.hud-help h2 {
+  margin: 0 0 6px;
+  color: #b8ffcf;
+}
+
+.hud-help p {
+  margin: 6px 0 12px;
+  opacity: 0.85;
+}
+
+.hud-help table {
+  border-spacing: 0 5px;
+}
+
+.hud-help td:first-child {
+  padding-right: 18px;
+  white-space: nowrap;
+}
+
+.hud-help-start {
+  text-align: center;
+  font-size: 18px;
+  margin-top: 14px !important;
+}
+
+/* HUD scale (Settings > Graphics > HUD): text and instruments only, never the 3D canvas. */
+.hud-instruments,
+.hud-top,
+.hud-warnings,
+.hud-center,
+.hud-message,
+.hud-bottom-right,
+.hud-help,
+.hud-nav-inner,
+.hud .race-panel,
+.hud .race-center {
+  zoom: var(--hud-scale, 1);
+}
+
+.hud-help {
+  max-height: calc(90vh / var(--hud-scale, 1));
+  max-width: min(520px, calc(92vw / var(--hud-scale, 1)));
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.hud .race-panel {
+  max-width: calc(45vw / var(--hud-scale, 1));
+}
+
+/* Gate navigator: anchored on the gate, or clamped to a free screen edge. */
+.hud-nav {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.hud-nav-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -12px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  white-space: nowrap;
+  color: #ffe27a;
+}
+
+.hud-nav-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.hud-nav-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+}
+
+.hud-nav-icon svg .fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+.hud-nav.right .hud-nav-icon svg {
+  transform: scaleX(-1);
+}
+
+.hud-nav-label,
+.hud-nav-cue {
+  margin-top: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+}
+
+.hud-nav-cue {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.hud-nav[data-kind='behind'] {
+  color: #ff9a3d;
+}
+
+.hud-nav[data-kind='behind'] .hud-nav-inner {
+  color: #ffb36b;
+}
+
+.hud-nav[data-kind='behind'] .hud-nav-label {
+  font-weight: bold;
+}

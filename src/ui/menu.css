@@ -1,0 +1,565 @@
+.menu-root {
+  --panel-pad-x: 32px;
+  --panel-pad-y: 26px;
+  --focus-ring: #7fe3ff;
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  color: #e4f3ea;
+  background: radial-gradient(ellipse at center, rgba(5, 20, 14, 0.55), rgba(0, 0, 0, 0.82));
+}
+
+.menu-root.transparent {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.menu-root.hidden {
+  display: none;
+}
+
+.menu-panel {
+  box-sizing: border-box;
+  min-width: min(420px, 100%);
+  max-width: min(860px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Keyboard/controller focus never lands hidden under the sticky action row. */
+  scroll-padding-bottom: 72px;
+  padding: var(--panel-pad-y) var(--panel-pad-x);
+  background: rgba(8, 22, 16, 0.92);
+  border: 1px solid rgba(140, 255, 190, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.menu-panel h1 {
+  margin: 0 0 4px;
+  font-size: 34px;
+  letter-spacing: 3px;
+  color: #b8ffcf;
+}
+
+.menu-panel h2 {
+  margin: 0 0 14px;
+  font-size: 22px;
+  color: #b8ffcf;
+}
+
+.menu-panel h3 {
+  margin: 16px 0 8px;
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  opacity: 0.75;
+}
+
+.menu-sub {
+  margin: 0 0 20px;
+  opacity: 0.7;
+}
+
+.menu-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.menu-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.menu-btn {
+  min-height: 40px;
+  padding: 11px 18px;
+  font-size: 16px;
+  color: #e4f3ea;
+  background: rgba(60, 140, 95, 0.25);
+  border: 1px solid rgba(140, 255, 190, 0.4);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.menu-btn:hover {
+  background: rgba(80, 190, 125, 0.45);
+}
+
+.menu-btn.primary {
+  background: rgba(255, 194, 26, 0.3);
+  border-color: rgba(255, 194, 26, 0.7);
+}
+
+.menu-btn.small {
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.menu-btn.selected,
+.menu-btn[aria-pressed='true'] {
+  border-color: #ffc21a;
+  background: rgba(255, 194, 26, 0.18);
+  box-shadow: inset 0 0 0 1px #ffc21a;
+}
+
+/* Keyboard/controller focus: a ring distinct from the gold "selected" state. */
+.menu-root :focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.menu-root button:focus-visible {
+  background: rgba(127, 227, 255, 0.18);
+}
+
+/* The last action row (Back...) stays reachable while long screens scroll. */
+.menu-panel > .menu-row:last-child {
+  position: sticky;
+  bottom: calc(-1 * var(--panel-pad-y));
+  z-index: 1;
+  margin: 16px calc(-1 * var(--panel-pad-x)) calc(-1 * var(--panel-pad-y));
+  padding: 12px var(--panel-pad-x) var(--panel-pad-y);
+  background: linear-gradient(rgba(8, 22, 16, 0.9), rgb(8, 22, 16) 40%);
+  border-radius: 0 0 12px 12px;
+}
+
+.menu-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 190px) minmax(90px, 1fr) minmax(48px, 70px);
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+
+.menu-field input[type='text'],
+.menu-field select {
+  grid-column: span 2;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #e4f3ea;
+  border: 1px solid rgba(140, 255, 190, 0.3);
+  border-radius: 6px;
+}
+
+.menu-check input {
+  justify-self: start;
+}
+
+.menu-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.menu-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.menu-card {
+  padding: 14px;
+  border: 1px solid rgba(140, 255, 190, 0.3);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.menu-card.selected {
+  border-color: #ffc21a;
+  background: rgba(255, 194, 26, 0.12);
+}
+
+.menu-card b {
+  display: block;
+  font-size: 17px;
+  margin-bottom: 4px;
+}
+
+.menu-card p {
+  font-size: 13px;
+  opacity: 0.8;
+  min-height: 3.2em;
+}
+
+.menu-stat {
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.menu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-table td,
+.menu-table th {
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(140, 255, 190, 0.15);
+  text-align: left;
+}
+
+.medal-gold { color: #ffd34d; }
+.medal-silver { color: #d6e0e6; }
+.medal-bronze { color: #d69455; }
+
+.menu-error {
+  color: #ff7b7b;
+  min-height: 1.2em;
+}
+
+.keybind-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 200px) 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.keybind-row kbd {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 2px 8px;
+  border: 1px solid rgba(184, 255, 207, 0.5);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  font-family: Consolas, monospace;
+}
+
+.race-center {
+  position: absolute;
+  top: 34%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 96px;
+  font-weight: bold;
+  color: #ffc21a;
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.9);
+}
+
+.race-panel {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  min-width: 190px;
+  text-align: right;
+}
+
+.race-panel .big {
+  font-size: 30px;
+  font-weight: bold;
+}
+
+.race-delta.ahead { color: #59e68a; }
+.race-delta.behind { color: #ff6b6b; }
+
+.race-standings {
+  margin-top: 8px;
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.lobby-panel {
+  width: min(680px, 100%);
+}
+
+.lobby-dim {
+  opacity: 0.6;
+  font-size: 13px;
+}
+
+.lobby-ready {
+  color: #59e68a;
+  font-weight: bold;
+}
+
+.lobby-code {
+  margin: 4px 0 8px;
+  font-size: 16px;
+}
+
+.lobby-code b {
+  font-family: Consolas, monospace;
+  font-size: 22px;
+  letter-spacing: 3px;
+  color: #ffc21a;
+}
+
+.lobby-status {
+  color: #ffc21a;
+}
+
+.lobby-join-code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.lobby-code-input,
+.lobby-chat-input {
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #e4f3ea;
+  border: 1px solid rgba(140, 255, 190, 0.3);
+  border-radius: 6px;
+}
+
+.lobby-code-input {
+  width: 80px;
+  text-transform: uppercase;
+  font-family: Consolas, monospace;
+  letter-spacing: 2px;
+}
+
+.lobby-chat-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.lobby-chat-log {
+  height: 90px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+/* ---------------------------------------------------------------- hangar */
+
+.hangar-panel {
+  width: min(860px, 100%);
+}
+
+.hangar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 230px);
+  gap: 16px;
+  align-items: start;
+}
+
+.hangar-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.hangar-view {
+  aspect-ratio: 4 / 3;
+  max-height: 300px;
+  min-height: 140px;
+  border: 1px solid rgba(140, 255, 190, 0.25);
+  border-radius: 10px;
+  background: radial-gradient(ellipse at 50% 65%, rgba(120, 170, 150, 0.35), rgba(0, 0, 0, 0.35) 70%);
+  overflow: hidden;
+}
+
+.hangar-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hangar-info h3.hangar-name {
+  margin: 0 0 4px;
+  font-size: 19px;
+  letter-spacing: 1px;
+  text-transform: none;
+  opacity: 1;
+  color: #ffd76a;
+}
+
+.hangar-desc {
+  margin: 0 0 10px;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.hangar-traits {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 10px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.hangar-traits dt {
+  opacity: 0.85;
+}
+
+.hangar-traits dd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.hangar-bar {
+  position: relative;
+  flex: 1;
+  min-width: 60px;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Middle mark = the standard airframe. */
+.hangar-bar::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: rgba(228, 243, 234, 0.7);
+}
+
+.hangar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #3fae6f, #ffc21a);
+}
+
+.hangar-verdict {
+  min-width: 82px;
+  font-size: 12px;
+}
+
+.hangar-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.hangar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hangar-choice {
+  display: grid;
+  gap: 2px;
+}
+
+.hangar-role {
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.hangar-badge {
+  display: none;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #ffc21a;
+}
+
+.hangar-choice[aria-pressed='true'] .hangar-badge {
+  display: block;
+}
+
+/* ---------------------------------------------------------------- small windows */
+
+@media (max-width: 760px) {
+  .hangar,
+  .hangar-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hangar-view {
+    max-height: 220px;
+    aspect-ratio: 16 / 9;
+  }
+
+  .hangar-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .menu-root {
+    --panel-pad-x: 16px;
+    --panel-pad-y: 16px;
+    padding: 6px;
+  }
+
+  .menu-panel h1 {
+    font-size: 24px;
+    letter-spacing: 2px;
+  }
+
+  .menu-field,
+  .keybind-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .menu-field > span:first-child,
+  .keybind-row > span:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .menu-field input[type='text'],
+  .menu-field select {
+    grid-column: 1 / -1;
+  }
+
+  .menu-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+
+@media (max-height: 560px) {
+  .menu-root {
+    --panel-pad-y: 14px;
+    padding: 6px;
+  }
+
+  .menu-panel h1 {
+    font-size: 24px;
+  }
+
+  .menu-sub {
+    margin-bottom: 10px;
+  }
+
+  .menu-col {
+    gap: 6px;
+  }
+
+  .menu-btn {
+    min-height: 34px;
+    padding: 7px 14px;
+  }
+
+  .hangar-view {
+    aspect-ratio: auto;
+    height: 170px;
+  }
+}
