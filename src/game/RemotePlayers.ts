@@ -6,7 +6,7 @@ import { PuppetJet } from './PuppetJet';
 /** Renders the other pilots connected to the multiplayer relay. */
 export class RemotePlayers {
   private readonly jets = new Map<string, PuppetJet>();
-  private readonly snapshot: RemoteSnapshot = { position: new Vector3(), quaternion: new Quaternion(), throttle: 0, afterburner: false };
+  private readonly snapshot: RemoteSnapshot = { position: new Vector3(), quaternion: new Quaternion(), velocity: new Vector3(), throttle: 0, afterburner: false };
   private readonly unsubscribe: Array<() => void> = [];
 
   constructor(private readonly net: NetClient, private readonly parent: Object3D, onMessage: (text: string) => void) {

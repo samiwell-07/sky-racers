@@ -1,6 +1,7 @@
 import { Group, type Material, type Vector3 } from 'three';
 import { computeChunkArrays, type ChunkArrays } from './chunkMeshData';
 import type { HeightField } from './HeightField';
+import type { ChunkRequest } from './terrainWorker';
 import { TerrainChunk } from './TerrainChunk';
 
 interface Wanted {
@@ -10,7 +11,7 @@ interface Wanted {
   dist: number;
 }
 
-type ChunkResult = ChunkArrays & { key: string; cx: number; cz: number; lod: number };
+type ChunkResult = ChunkArrays & { key: string; cx: number; cz: number; lod: number; gen: number };
 
 /** Chunks this close to the camera are built synchronously if missing (e.g. right after a spawn). */
 const SYNC_DISTANCE = 450;
@@ -37,9 +38,12 @@ export class TerrainStreamer {
   private wanted = new Map<string, Wanted>();
   private lastPlanX = Number.NaN;
   private lastPlanZ = Number.NaN;
+  private viewScale = 1;
+  /** Bumped by setWorld(): worker results of an older world are dropped. */
+  private gen = 0;
 
   constructor(
-    private readonly heightField: HeightField,
+    private heightField: HeightField,
     private material: Material,
   ) {
     this.group.name = 'terrain';
@@ -50,7 +54,7 @@ export class TerrainStreamer {
         const w = new Worker(new URL('./terrainWorker.ts', import.meta.url), { type: 'module' });
         w.onmessage = (e: MessageEvent<ChunkResult>) => {
           this.busy[i] = false;
-          this.ready.push(e.data);
+          if (e.data.gen === this.gen) this.ready.push(e.data);
           this.pump();
         };
         this.workers.push(w);
@@ -61,6 +65,7 @@ export class TerrainStreamer {
 
   /** Scale view distance (graphics quality). */
   setDetail(viewScale: number): void {
+    this.viewScale = viewScale;
     this.lodDistances = this.heightField.config.lodDistances.map((d) => d * viewScale);
     this.lastPlanX = Number.NaN;
   }
@@ -69,6 +74,25 @@ export class TerrainStreamer {
   setMaterial(material: Material): void {
     this.material = material;
     for (const chunk of this.chunks.values()) chunk.mesh.material = material;
+  }
+
+  /**
+   * Switches to another world (between sessions, without reloading): drops every chunk and all
+   * queued / in-flight work; the next update() rebuilds around the camera.
+   */
+  setWorld(heightField: HeightField): void {
+    this.heightField = heightField;
+    this.gen++;
+    for (const [key, chunk] of this.chunks) this.removeChunk(key, chunk);
+    this.inFlight.clear();
+    this.ready.length = 0;
+    this.queue = [];
+    this.wanted = new Map();
+    this.setDetail(this.viewScale);
+  }
+
+  get world(): HeightField {
+    return this.heightField;
   }
 
   get viewDistance(): number {
@@ -129,7 +153,8 @@ export class TerrainStreamer {
       const [key, w] = this.queue.shift()!;
       this.busy[i] = true;
       this.inFlight.set(key, w.lod);
-      this.workers[i]!.postMessage({ key, cx: w.cx, cz: w.cz, lod: w.lod });
+      const request: ChunkRequest = { key, cx: w.cx, cz: w.cz, lod: w.lod, gen: this.gen, spec: this.heightField.world.spec };
+      this.workers[i]!.postMessage(request);
     }
   }
 
@@ -148,7 +173,7 @@ export class TerrainStreamer {
   private buildNearbySync(): void {
     for (const [key, w] of this.wanted) {
       if (w.dist > SYNC_DISTANCE || this.chunks.get(key)?.lod === w.lod) continue;
-      this.addChunk(key, w, computeChunkArrays(w.cx, w.cz, w.lod, this.heightField.config, this.heightField.heightFn));
+      this.addChunk(key, w, computeChunkArrays(w.cx, w.cz, w.lod, this.heightField.config, this.heightField.world));
       this.queue = this.queue.filter(([k]) => k !== key);
     }
   }
@@ -158,20 +183,20 @@ export class TerrainStreamer {
     const start = performance.now();
     while (this.queue.length > 0 && performance.now() - start < FRAME_BUDGET_MS) {
       const [key, w] = this.queue.shift()!;
-      this.addChunk(key, w, computeChunkArrays(w.cx, w.cz, w.lod, this.heightField.config, this.heightField.heightFn));
+      this.addChunk(key, w, computeChunkArrays(w.cx, w.cz, w.lod, this.heightField.config, this.heightField.world));
     }
   }
 
   private addChunk(key: string, w: { cx: number; cz: number; lod: number }, data: ChunkArrays): void {
     const old = this.chunks.get(key);
     const chunk = new TerrainChunk(w.cx, w.cz, w.lod, this.heightField.config, data, this.material);
-    this.group.add(chunk.mesh);
+    this.group.add(chunk.object);
     this.chunks.set(key, chunk);
     if (old) this.removeChunk(key, old, false);
   }
 
   private removeChunk(key: string, chunk: TerrainChunk, forget = true): void {
-    this.group.remove(chunk.mesh);
+    this.group.remove(chunk.object);
     chunk.dispose();
     if (forget) this.chunks.delete(key);
   }
@@ -180,7 +205,7 @@ export class TerrainStreamer {
   buildAll(center: Vector3): void {
     this.plan(center);
     for (const [key, w] of this.queue) {
-      this.addChunk(key, w, computeChunkArrays(w.cx, w.cz, w.lod, this.heightField.config, this.heightField.heightFn));
+      this.addChunk(key, w, computeChunkArrays(w.cx, w.cz, w.lod, this.heightField.config, this.heightField.world));
     }
     this.queue = [];
   }

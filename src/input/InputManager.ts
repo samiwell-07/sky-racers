@@ -133,7 +133,17 @@ export class InputManager {
   }
 
   isDown(action: InputAction): boolean {
-    return this.bindings.get(action).some((code) => this.down.has(code)) || (action === 'airbrake' && !!this.padState?.airbrakeHeld);
+    return this.bindings.get(action).some((code) => this.down.has(code)) || this.padHeld(action);
+  }
+
+  /** Hold-type gamepad buttons (airbrake, gun trigger, missile button for a locked launch). */
+  private padHeld(action: InputAction): boolean {
+    const pad = this.padState;
+    if (!pad) return false;
+    if (action === 'airbrake') return pad.airbrakeHeld;
+    if (action === 'fireGun') return pad.fireGunHeld;
+    if (action === 'fireMissile') return pad.fireMissileHeld;
+    return false;
   }
 
   /** True once per key/button press. */
@@ -154,7 +164,11 @@ export class InputManager {
     this.keyRoll = 0;
     this.mouse.release();
     this.gamepad.suppressHeld();
-    if (this.padState) this.padState.airbrakeHeld = false;
+    if (this.padState) {
+      this.padState.airbrakeHeld = false;
+      this.padState.fireGunHeld = false;
+      this.padState.fireMissileHeld = false;
+    }
   }
 
   // ------------------------------------------------------------ menus

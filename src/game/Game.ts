@@ -1,10 +1,10 @@
-import { Group, Mesh, Points, Quaternion, Scene, Vector3, type Material, type Object3D, type WebGLRenderer } from 'three';
+import { Group, Mesh, MeshStandardMaterial, Points, Quaternion, Scene, Vector3, type Material, type Object3D, type WebGLRenderer } from 'three';
 import { AudioEngine, type FlybyListener, type FlybySource } from '../audio/AudioEngine';
 import { CameraManager } from '../camera/CameraManager';
+import { cockpitEyeFor } from '../camera/CockpitCamera';
 import type { CameraTarget } from '../camera/CameraController';
 import { createCameraConfig } from '../config/cameraConfig';
 import { DEFAULT_FLIGHT_CONFIG, createFlightConfig } from '../config/flightConfig';
-import { LANDMARKS, SPAWN_CONFIG, TERRAIN_CONFIG } from '../config/worldConfig';
 import { GameLoop } from '../core/GameLoop';
 import { createRenderer, handleResize } from '../core/Renderer';
 import { shakeOffset } from '../effects/CameraShake';
@@ -17,16 +17,16 @@ import { getJetDefinition } from '../entities/jet/jetCatalog';
 import { InputManager } from '../input/InputManager';
 import { KeyBindings, keyLabel } from '../input/KeyBindings';
 import { NetClient } from '../net/NetClient';
-import { BUILTIN_COURSES, resolveCourse, type CourseDef } from '../race/Course';
+import { BUILTIN_COURSES, type CourseDef } from '../race/Course';
 import type { Lobby } from '../net/lobbyTypes';
 import { LobbyMenu } from '../ui/LobbyMenu';
 import { CourseLibrary } from '../race/CourseLibrary';
 import { Leaderboard } from '../race/Leaderboard';
-import { RaceProgress } from '../race/RaceProgress';
 import { DEFAULT_SETTINGS, GRAPHICS_PRESETS, SettingsStore } from '../settings/Settings';
 import { CollisionSystem, IMPACT_RULES, ImpactTracker, type CrashReason } from '../systems/CollisionSystem';
 import { GroundHandling } from '../systems/GroundHandling';
 import { GForceOverlay } from '../ui/GForceOverlay';
+import type { FlightControls } from '../physics/types';
 import { Hud, formatTime, type GamePhase } from '../ui/Hud';
 import { MainMenu } from '../ui/MainMenu';
 import { attachMenuNavigation } from '../ui/menuFocus';
@@ -35,14 +35,13 @@ import { SettingsPanel } from '../ui/SettingsPanel';
 import { RAD2DEG, smoothstep } from '../utils/math';
 import { Clouds } from '../world/environment/Clouds';
 import { Lights } from '../world/environment/Lights';
-import { River } from '../world/environment/River';
 import { createRunwayMesh } from '../world/environment/Runway';
 import { Sky } from '../world/environment/Sky';
 import { applyTimeOfDay } from '../world/environment/TimeOfDay';
 import { Weather } from '../world/environment/Weather';
 import { PropsManager } from '../world/props/PropsManager';
 import { RingManager } from '../world/rings/RingManager';
-import { HeightField, valleyCenterX } from '../world/terrain/HeightField';
+import { HeightField } from '../world/terrain/HeightField';
 import { createTerrainMaterial } from '../world/terrain/TerrainMaterial';
 import { TerrainStreamer } from '../world/terrain/TerrainStreamer';
 import { RaceSession, type Standing } from './RaceSession';
@@ -55,9 +54,35 @@ import { ModeHud } from '../ui/ModeHud';
 import type { SaveResult } from '../settings/safeStorage';
 import { lessonCompletePanel, lessonListPanel, modePausePanel, practiceSetupPanel } from '../ui/ModeMenus';
 import { RemotePlayers } from './RemotePlayers';
+import { freeSpawnPose, menuCameraPose, menuOrbitHeight, propsOptionsFor } from './worldSession';
+import { createWorld } from '../world/gen/createWorld';
+import { CLASSIC_WORLD, worldKey, type WorldGenerator, type WorldSpec } from '../world/gen/WorldGenerator';
+import { updateWater } from '../world/water/water';
+import { lobbyForcedView, lobbyJetId, lobbyRaceCourse, lobbyWorldSpec, type LobbyMode } from '../net/lobbyTypes';
+import type { RaceDifficulty, RaceLayout } from '../race/generatedCourse';
+import { generateCourseForRequest } from '../race/CourseGenerator';
+import { Radar } from '../ui/radar/Radar';
+import { RadarContactList, addAirfieldContact, addGateContacts, addJetContact, addMissileContacts, selfFromPose } from '../ui/radar/radarProviders';
+import { DogfightSession, dogfightSlot } from '../modes/DogfightSession';
+import { DogfightHud } from '../ui/dogfight/DogfightHud';
+import type { Combatant, WeaponInput } from '../combat';
+import { DOGFIGHT_RULES } from '../combat/types';
 
 /** 'lesson' = flight school, 'practice' = unranked gate-section practice. Every mode but 'menu' is flying. */
-type Mode = 'menu' | 'free' | 'race' | 'lesson' | 'practice';
+type Mode = 'menu' | 'free' | 'race' | 'lesson' | 'practice' | 'dogfight';
+
+/** Remote opponent as a Combatant, refreshed from the interpolated network snapshot every fixed step. */
+interface RemoteCombatant extends Combatant {
+  id: string;
+  afterburner: boolean;
+  alive: boolean;
+}
+
+interface RemoteOpponent {
+  snap: { position: Vector3; quaternion: Quaternion; velocity: Vector3; throttle: number; afterburner: boolean };
+  combatant: RemoteCombatant;
+  explosion: Explosion;
+}
 
 const CRASH_TEXT: Record<CrashReason, string> = {
   ground: 'You hit the ground',
@@ -72,6 +97,7 @@ const CRASH_TEXT: Record<CrashReason, string> = {
 
 const RESPAWN_DELAY = IMPACT_RULES.respawnDelay;
 const UP = new Vector3(0, 1, 0);
+const NO_FLIGHT_CONTROLS: FlightControls = { pitch: 0, roll: 0, throttle: 0 };
 /** Practice session-best key: course + section. */
 const practiceKey = (c: PracticeChoice): string => `${c.courseId}:${c.start}:${c.count}`;
 
@@ -89,9 +115,13 @@ export class Game {
   private readonly cameraConfig = createCameraConfig();
 
   // World
-  private readonly heightField = new HeightField(TERRAIN_CONFIG);
+  /** The loaded world (Classic Canyon or a seeded world); switched with setWorld() between sessions. */
+  private currentWorld: WorldGenerator = createWorld(CLASSIC_WORLD);
+  private heightField = new HeightField(this.currentWorld);
+  private runwayMesh: Mesh;
+  /** Cached menu flyover height of the current (non-Classic) world. */
+  private menuOrbitY: number | null = null;
   private readonly terrain: TerrainStreamer;
-  private readonly river = new River(TERRAIN_CONFIG);
   private readonly sky: Sky;
   private readonly lights: Lights;
   private readonly clouds = new Clouds();
@@ -100,8 +130,8 @@ export class Game {
 
   // Player
   private jet: Jet;
-  private readonly ground: GroundHandling;
-  private readonly collision: CollisionSystem;
+  private ground: GroundHandling;
+  private collision: CollisionSystem;
   private readonly explosion = new Explosion();
   private readonly vapor = new VaporTrails();
   private readonly dust = new DustKicker();
@@ -120,8 +150,6 @@ export class Game {
   private flightTime = 0;
   private time = 0;
   private readonly rings = new RingManager();
-  private freeProgress: RaceProgress | null = null;
-  private freeGates = resolveCourse(BUILTIN_COURSES[1]!, this.heightField).gates;
   private race: RaceSession | null = null;
   /** Flight school lesson / practice section in progress (never ranked, never write records). */
   private school: FlightSchool | null = null;
@@ -134,6 +162,7 @@ export class Game {
   private readonly modeHud: ModeHud;
   private readonly settingsPanel: SettingsPanel;
   private lastCourse: CourseDef | null = null;
+  private lastLaps: number | undefined = undefined;
 
   // Services & UI
   private readonly audio = new AudioEngine();
@@ -148,6 +177,8 @@ export class Game {
   private mpMenuOpen = false;
   /** Grid / runway slot in multiplayer so players don't spawn inside each other. */
   private spawnSlot = 0;
+  /** Camera view the lobby host imposes during the current multiplayer game (null = pilot's choice). */
+  private forcedView: 'chase' | 'cockpit' | null = null;
   private readonly remoteSnap = { position: new Vector3(), quaternion: new Quaternion(), throttle: 0, afterburner: false };
   private readonly flybySources: FlybySource[] = [];
   private readonly flybyListener = { position: new Vector3(), right: new Vector3(), velocity: new Vector3() };
@@ -160,7 +191,19 @@ export class Game {
   private readonly tmp2 = new Vector3();
   private readonly shake = new Vector3();
   private readonly anisotropy: number;
-  private readonly terrainMaterials = new Map<boolean, Material>();
+  /** Terrain materials per (simple shader, world water level). */
+  private readonly terrainMaterials = new Map<string, Material>();
+  // Radar (every flying mode) and the dogfight session (dogfight mode only).
+  private readonly radar: Radar;
+  private readonly radarList = new RadarContactList();
+  private readonly radarSelf = { x: 0, y: 0, z: 0, heading: 0 };
+  private dogfight: DogfightSession | null = null;
+  /** One explosion per possible opponent (a dogfight has up to DOGFIGHT_RULES.maxPlayers - 1). */
+  private readonly opponentExplosions = Array.from({ length: DOGFIGHT_RULES.maxPlayers - 1 }, () => new Explosion());
+  /** Dogfight opponents: interpolated snapshot + Combatant view, by player id. */
+  private readonly opponents = new Map<string, RemoteOpponent>();
+  private readonly weaponInput: WeaponInput = { fireGun: false, fireMissile: false, fireMissileHeld: false, releaseFlares: false };
+  private readonly oppList: Combatant[] = [];
   // Dynamic resolution + UI throttling.
   private pixelRatio = 1;
   private frameTimeAvg = 16;
@@ -179,37 +222,39 @@ export class Game {
     this.sky = new Sky(this.scene);
     this.lights = new Lights(this.scene);
     this.weather = new Weather({ windSpeed: 0, windDirection: 0, turbulence: 0 });
-    this.props = new PropsManager({
-      seed: TERRAIN_CONFIG.seed,
-      heightAt: (x, z) => this.heightField.getHeightAt(x, z),
-      valleyCenterX,
-      powerLineZ: [...LANDMARKS.powerLineZ],
-      archZ: [...LANDMARKS.archZ],
-      clearZones: [{ x: this.heightField.runway.x, z: this.heightField.runway.z, halfWidth: 140, halfLength: this.heightField.runway.halfLength + 300, heading: 0 }],
-    });
+    this.weather.setCanyonFactor((x, z) => this.currentWorld.canyonFactor(x, z));
+    this.props = new PropsManager(propsOptionsFor(this.currentWorld));
     this.ground = new GroundHandling(this.heightField);
     this.collision = new CollisionSystem(this.heightField, this.props);
     this.jet = this.createPlayerJet();
-    this.scene.add(this.terrain.group, this.river.mesh, this.clouds.mesh, this.props.group, this.rings.group, this.explosion.group, this.vapor.object, this.dust.object, createRunwayMesh(this.heightField.runway));
+    this.runwayMesh = createRunwayMesh(this.heightField.runway);
+    this.scene.add(this.terrain.group, this.clouds.mesh, this.props.group, this.rings.group, this.explosion.group, ...this.opponentExplosions.map((e) => e.group), this.vapor.object, this.dust.object, this.runwayMesh);
 
     const groundHeight = (x: number, z: number): number => this.heightField.getSurfaceHeight(x, z);
     this.cameras = new CameraManager(this.cameraConfig, groundHeight);
-    this.cameraTarget = { position: this.jet.object.position, quaternion: this.jet.object.quaternion, speed: 0 };
+    this.cameraTarget = { position: this.jet.object.position, quaternion: this.jet.object.quaternion, speed: 0, cockpitEye: cockpitEyeFor(this.jet.definition.id) };
 
     this.gforce = new GForceOverlay(container);
     this.hud = new Hud(container, this.bindings);
+    const sv = this.settings.values;
+    this.radar = new Radar(this.hud.element, { range: sv.radarRange, visible: sv.showRadar, scale: sv.hudScale });
+    this.hud.mountRadar(this.radar.root);
+    this.radar.onRangeChange = (m) => {
+      if (this.settings.values.radarRange !== m) this.settings.set('radarRange', m);
+    };
     this.raceHud = new RaceHud(container);
     this.modeHud = new ModeHud(container);
     const settingsPanel = (this.settingsPanel = new SettingsPanel(this.settings, this.bindings, this.input));
     this.menu = new MainMenu(container, this.settings, this.courses, this.leaderboard, settingsPanel, {
-      startFreeFlight: () => this.startFreeFlight(),
+      startFreeFlight: (world) => this.startFreeFlight(world),
       startRace: (id) => {
         const c = this.courses.get(id);
         if (c) this.startRace(c);
       },
+      startGeneratedRace: (world, difficulty, layout, laps) => this.startGeneratedRace(world, difficulty, layout, laps),
       openFlightSchool: () => this.showLessonList(),
       openPractice: (courseId) => this.showPracticeSetup(courseId),
-      openMultiplayer: () => void this.lobbyMenu.open(),
+      openMultiplayer: (mode?: LobbyMode) => void this.lobbyMenu.open(mode ?? null),
       resume: () => this.setPaused(false),
       restart: () => this.restart(),
       quitToMenu: () => this.showMenu(),
@@ -292,31 +337,36 @@ export class Game {
 
   // ---------------------------------------------------------------- setup
 
-  private createPlayerJet(): Jet {
-    const def = getJetDefinition(this.settings.values.jetId);
+  private createPlayerJet(jetId = this.settings.values.jetId): Jet {
+    const def = getJetDefinition(jetId);
     Object.assign(this.flightConfig, DEFAULT_FLIGHT_CONFIG, def.flight);
     const jet = new Jet(def, this.flightConfig);
     this.scene.add(jet.object);
     return jet;
   }
 
-  /** Rebuild the player jet if the selected type changed. */
-  private ensurePlayerJet(): void {
-    if (this.jet.definition.id === this.settings.values.jetId) {
+  /** Rebuild the player jet if the selected type (or the lobby host's forced jet) changed. */
+  private ensurePlayerJet(lobby: Lobby | null = null): void {
+    const jetId = lobby ? lobbyJetId(lobby.settings, this.settings.values.jetId) : this.settings.values.jetId;
+    if (this.jet.definition.id === jetId) {
       Object.assign(this.flightConfig, DEFAULT_FLIGHT_CONFIG, this.jet.definition.flight);
       return;
     }
     this.jet.dispose();
-    this.jet = this.createPlayerJet();
+    this.jet = this.createPlayerJet(jetId);
     this.cameraTarget.position = this.jet.object.position;
     this.cameraTarget.quaternion = this.jet.object.quaternion;
+    this.cameraTarget.cockpitEye = cockpitEyeFor(this.jet.definition.id);
   }
 
   private terrainMaterial(simple: boolean): Material {
-    let m = this.terrainMaterials.get(simple);
+    // Seeded worlds have their sea at 0 m, Classic's river at 17 m: the bank shading follows the world.
+    const cfg = this.currentWorld.config;
+    const key = `${simple}:${cfg.waterLevel}:${cfg.detailTextureScale}`;
+    let m = this.terrainMaterials.get(key);
     if (!m) {
-      m = createTerrainMaterial(TERRAIN_CONFIG, this.anisotropy, simple);
-      this.terrainMaterials.set(simple, m);
+      m = createTerrainMaterial(cfg, this.anisotropy, simple);
+      this.terrainMaterials.set(key, m);
     }
     return m;
   }
@@ -349,6 +399,9 @@ export class Game {
     Object.assign(this.weather.settings, this.race?.weather ?? { windSpeed: w.windSpeed, windDirection: w.windDirection, turbulence: w.turbulence });
     this.input.applySettings();
     this.hud.setLayout(s.hudLayout, s.hudScale);
+    this.radar.setVisible(s.showRadar);
+    this.radar.setScale(s.hudScale);
+    this.radar.setRange(s.radarRange);
     if (this.loop) void this.warmUpShaders();
   }
 
@@ -389,42 +442,137 @@ export class Game {
   private startMultiplayerGame(lobby: Lobby, late: boolean): void {
     this.lobbyMenu.deactivate();
     this.spawnSlot = Math.max(0, lobby.players.findIndex((p) => p.id === this.net.id));
+    const world = lobbyWorldSpec(lobby.settings.world);
     if (lobby.settings.mode === 'race') {
-      const course = BUILTIN_COURSES.find((c) => c.id === lobby.settings.courseId) ?? BUILTIN_COURSES[0]!;
-      this.startRace(course, lobby);
+      const rc = lobbyRaceCourse(lobby.settings);
+      if (rc.kind === 'classic') {
+        const course = BUILTIN_COURSES.find((c) => c.id === rc.courseId) ?? BUILTIN_COURSES[0]!;
+        this.startRace(course, lobby);
+      } else {
+        this.startGeneratedRace(rc.request.world, rc.request.difficulty, rc.request.layout, rc.laps, lobby);
+      }
+    } else if (lobby.settings.mode === 'dogfight') {
+      this.startDogfight(lobby, world);
     } else {
-      this.startFreeFlight(lobby);
+      this.startFreeFlight(world, lobby);
       if (late) this.hud.showMessage(`Joined ${lobby.settings.name}`, 3);
     }
+    this.forcedView = lobbyForcedView(lobby.settings);
+    if (this.forcedView) this.setCameraView(this.forcedView);
   }
 
-  private startFreeFlight(lobby: Lobby | null = null): void {
+  private setCameraView(view: 'chase' | 'cockpit'): void {
+    // CameraManager only toggles; bounded in case more views are added.
+    for (let i = 0; i < 4 && this.cameras.mode !== view; i++) this.cameras.toggle(this.cameraTarget);
+  }
+
+  /** Race on the course generated for a seeded world (deterministic: same request = same course). */
+  private startGeneratedRace(world: WorldSpec, difficulty: RaceDifficulty, layout: RaceLayout, laps: number, lobby: Lobby | null = null): void {
+    this.startRace(generateCourseForRequest({ world, difficulty, layout }), lobby, laps);
+  }
+
+  /** Multiplayer dogfight (free-for-all, 2-4 pilots) on the lobby's world. */
+  private startDogfight(lobby: Lobby, world: WorldSpec): void {
     this.endRace();
-    this.ensurePlayerJet();
+    this.ensurePlayerJet(lobby);
+    this.setWorld(world);
+    this.mpGame = true;
+    this.mode = 'dogfight';
+    this.paused = false;
+    this.menu.hide();
+    this.hud.setVisible(true);
+    this.raceHud.setVisible(false);
+    this.rings.clear();
+    this.flightTime = 0;
+    const selfId = this.net.id ?? 'local';
+    // The pilots who started the match (late joiners wait in the lobby); they size the zone.
+    const pilots = lobby.players.filter((p) => p.inGame || p.id === selfId);
+    const rivals = pilots.filter((p) => p.id !== selfId);
+    this.opponents.clear();
+    rivals.forEach((p, i) => {
+      const snap = { position: new Vector3(), quaternion: new Quaternion(), velocity: new Vector3(), throttle: 0, afterburner: false };
+      const combatant: RemoteCombatant = { id: p.id, position: snap.position, velocity: snap.velocity, orientation: snap.quaternion, afterburner: false, alive: false };
+      this.opponents.set(p.id, { snap, combatant, explosion: this.opponentExplosions[i % this.opponentExplosions.length]! });
+    });
+    const hud = new DogfightHud({ onBackToLobby: () => this.backToLobby() });
+    hud.mount(this.container);
+    const spec = this.currentWorld.spec;
+    this.dogfight = new DogfightSession({
+      net: this.net,
+      selfId,
+      opponents: rivals.map((p) => ({ id: p.id, name: p.name })),
+      world: this.currentWorld,
+      seed: spec.kind === 'seeded' ? spec.seed : 0,
+      slot: dogfightSlot(selfId, pilots.map((p) => p.id)),
+      jet: this.jet,
+      scene: this.scene,
+      hud,
+      audio: this.audio,
+      hooks: {
+        respawn: (s) => this.spawnAt(s.position, s.heading, s.speed, false, { orientation: s.orientation }),
+        destroyed: () => {
+          this.phase = 'crashed';
+          this.respawnTimer = 0;
+          this.explosion.trigger(this.jet.position, this.jet.flight.state.velocity);
+          this.jet.object.visible = false;
+          this.shakeImpulse = 1.5;
+          this.audio.playCrash();
+        },
+        opponentDestroyed: (id) => {
+          const o = this.opponents.get(id);
+          if (o && o.combatant.alive) o.explosion.trigger(o.snap.position, o.snap.velocity);
+        },
+        countdownBeep: (go) => this.audio.playCountdownBeep(go),
+        finished: () => {
+          if (document.pointerLockElement) document.exitPointerLock();
+        },
+      },
+    });
+    this.dogfight.start();
+    const zoneKm = Math.round((this.dogfight.zone.radius * 2) / 1000);
+    this.hud.showMessage(
+      rivals.length === 0
+        ? 'Dogfight: waiting for an opponent'
+        : rivals.length === 1
+          ? `Dogfight vs ${rivals[0]!.name} · ${zoneKm} km zone`
+          : `Dogfight: ${pilots.length}-way free-for-all · ${zoneKm} km zone`,
+      3,
+    );
+  }
+
+  /** Free flight on `spec` (default Classic): no gates, just the world. */
+  private startFreeFlight(spec: WorldSpec = CLASSIC_WORLD, lobby: Lobby | null = null): void {
+    this.endRace();
+    this.ensurePlayerJet(lobby);
+    this.setWorld(spec);
     this.mpGame = lobby !== null;
     if (!lobby) this.spawnSlot = 0;
     this.mode = 'free';
     this.menu.hide();
     this.hud.setVisible(true);
     this.raceHud.setVisible(false);
-    this.rings.setGates(this.freeGates);
-    this.freeProgress = new RaceProgress(this.freeGates.length, 99);
+    this.rings.clear();
     this.spawnFree();
     this.hud.showMessage(this.settings.values.startOnRunway ? 'Full throttle, pull up at 280 km/h · G = gear' : 'Free flight', 4);
   }
 
-  private startRace(course: CourseDef, lobby: Lobby | null = null): void {
+  /** `laps` overrides the settings' laps (generated races pick theirs in the setup screen). */
+  private startRace(course: CourseDef, lobby: Lobby | null = null, laps?: number): void {
     this.endRace();
-    this.ensurePlayerJet();
+    this.ensurePlayerJet(lobby);
+    this.setWorld(course.world ?? CLASSIC_WORLD);
     this.mpGame = lobby !== null;
     if (!lobby) this.spawnSlot = 0;
     this.mode = 'race';
     this.lastCourse = course;
+    this.lastLaps = laps;
     this.menu.hide();
     this.hud.setVisible(true);
     this.raceHud.setVisible(true);
     // Multiplayer races: the lobby decides the laps; no AI or ghost so everyone races the same field.
-    const raceSettings = lobby ? { ...this.settings.values, laps: lobby.settings.laps, aiOpponents: 0, showGhost: false } : this.settings.values;
+    const raceSettings = lobby
+      ? { ...this.settings.values, laps: laps ?? lobby.settings.laps, aiOpponents: 0, showGhost: false }
+      : laps !== undefined ? { ...this.settings.values, laps } : this.settings.values;
     // Multiplayer races are unranked: they never write local records or ghosts.
     this.race = new RaceSession(course, raceSettings, this.heightField, this.scene, this.leaderboard, { ranked: !lobby });
     if (this.race.weather) Object.assign(this.weather.settings, this.race.weather);
@@ -443,11 +591,42 @@ export class Game {
       const w = this.worldSettings();
       Object.assign(this.weather.settings, { windSpeed: w.windSpeed, windDirection: w.windDirection, turbulence: w.turbulence });
     }
-    this.freeProgress = null;
     this.school = null;
     this.practice = null;
+    if (this.dogfight) {
+      this.dogfight.dispose();
+      this.dogfight = null;
+      this.opponents.clear();
+      for (const e of this.opponentExplosions) e.group.visible = false;
+    }
     this.modeHud.setVisible(false);
     this.raceHud.hideResults();
+  }
+
+  /**
+   * Loads another world between sessions (no-op if it is already loaded): terrain, chunk water,
+   * props, runway, weather canyon factor, ground handling and collision all follow the world.
+   */
+  private setWorld(spec: WorldSpec): void {
+    if (worldKey(spec) === worldKey(this.currentWorld.spec)) return;
+    const world = createWorld(spec);
+    this.currentWorld = world;
+    this.heightField = new HeightField(world);
+    this.menuOrbitY = null;
+    this.terrain.setWorld(this.heightField);
+    this.terrain.setMaterial(this.terrainMaterial(GRAPHICS_PRESETS[this.settings.values.graphics].simpleTerrain));
+    this.sky.setFogRange(this.terrain.viewDistance * 0.12, this.terrain.viewDistance * 0.9);
+    this.props.setWorld(propsOptionsFor(world));
+    this.weather.setCanyonFactor((x, z) => world.canyonFactor(x, z));
+    this.ground = new GroundHandling(this.heightField);
+    this.collision = new CollisionSystem(this.heightField, this.props);
+    this.scene.remove(this.runwayMesh);
+    this.runwayMesh.geometry.dispose();
+    const runwayMaterial = this.runwayMesh.material as MeshStandardMaterial;
+    runwayMaterial.map?.dispose();
+    runwayMaterial.dispose();
+    this.runwayMesh = createRunwayMesh(this.heightField.runway);
+    this.scene.add(this.runwayMesh);
   }
 
   // ---------------------------------------------------------------- flight school & practice
@@ -459,13 +638,20 @@ export class Game {
   }
 
   private showLessonList(): void {
-    this.toMenuScreen(lessonListPanel(this.lessonProgress, (l) => this.startLesson(l), () => this.showMenu()));
+    this.toMenuScreen(lessonListPanel(this.lessonProgress, (l) => this.startLesson(l), () => this.showPracticeMenu()));
+  }
+
+  /** Practice chooser: flight school or gate sections. */
+  private showPracticeMenu(): void {
+    if (this.mode !== 'menu') this.showMenu();
+    this.menu.showPracticeMenu();
   }
 
   private startLesson(lesson: LessonDef): void {
     this.endRace();
     this.ensurePlayerJet();
     this.spawnSlot = 0;
+    this.setWorld(CLASSIC_WORLD);
     this.mode = 'lesson';
     this.paused = false;
     this.school = new FlightSchool(lesson, this.heightField);
@@ -549,7 +735,7 @@ export class Game {
         BUILTIN_COURSES.slice(),
         this.practiceChoice,
         (c) => this.startPractice(c),
-        () => this.showMenu(),
+        () => this.showPracticeMenu(),
         (panel) => this.menu.show(panel),
         (c) => this.practiceBest.get(practiceKey(c)) ?? null,
       );
@@ -568,6 +754,7 @@ export class Game {
     this.endRace();
     this.ensurePlayerJet();
     this.spawnSlot = 0;
+    this.setWorld(CLASSIC_WORLD);
     this.mode = 'practice';
     this.paused = false;
     this.lastCourse = null;
@@ -646,8 +833,9 @@ export class Game {
     this.menu.hide();
     if (this.mpGame) {
       // Multiplayer: never restart the shared race, just respawn (not during the countdown: we're already on the grid).
-      if (this.phase !== 'crashed' && !this.race?.frozen) this.respawnAfterCrash();
-    } else if (this.mode === 'race' && this.lastCourse) this.startRace(this.lastCourse);
+      // Dogfight respawns are decided by the match itself.
+      if (this.mode !== 'dogfight' && this.phase !== 'crashed' && !this.race?.frozen) this.respawnAfterCrash();
+    } else if (this.mode === 'race' && this.lastCourse) this.startRace(this.lastCourse, null, this.lastLaps);
     else if (this.mode === 'free') this.spawnFree();
     else if (this.mode === 'lesson' && this.school) this.spawnLesson();
     else if (this.mode === 'practice' && this.practice) this.retryPractice();
@@ -701,24 +889,8 @@ export class Game {
   // ---------------------------------------------------------------- spawning
 
   private spawnFree(): void {
-    const s = this.settings.values;
-    // Multiplayer: spread players over the runway (2 columns, 60 m rows) / the air start.
-    const slot = this.spawnSlot;
-    const dx = slot === 0 ? 0 : (slot % 2 === 1 ? -1 : 1) * 14;
-    const back = Math.ceil(slot / 2) * 60;
-    if (s.startOnRunway) {
-      const r = this.heightField.runway;
-      const pos = new Vector3(r.x + dx, r.height + GEAR_HEIGHT, r.z + r.halfLength - 80 - back);
-      this.spawnAt(pos, 0, 0, true);
-    } else {
-      // In the air above the runway's axis, heading straight down it toward the canyon.
-      const r = this.heightField.runway;
-      const z = SPAWN_CONFIG.z + back * 2;
-      const pos = new Vector3(r.x + dx * 3, this.heightField.getSurfaceHeight(r.x, z) + SPAWN_CONFIG.heightAboveGround, z);
-      this.spawnAt(pos, 0, SPAWN_CONFIG.speed, false);
-    }
-    this.freeProgress = new RaceProgress(this.freeGates.length, 99);
-    this.rings.showProgress(0);
+    const p = freeSpawnPose(this.currentWorld, this.spawnSlot, this.settings.values.startOnRunway, (x, z) => this.heightField.getSurfaceHeight(x, z), GEAR_HEIGHT);
+    this.spawnAt(new Vector3(p.x, p.y, p.z), p.heading, p.speed, p.onGround);
     this.flightTime = 0;
   }
 
@@ -772,7 +944,76 @@ export class Game {
     this.shakeImpulse = 1.5;
     this.audio.playCrash();
     this.hud.showMessage(CRASH_TEXT[reason], 2.5);
-    this.net.sendEvent('crash');
+    if (this.dogfight) this.dogfight.onLocalCrash();
+    else this.net.sendEvent('crash');
+  }
+
+  /** Weapon triggers and the opponents for one dogfight step (no triggers while frozen, dead or in the menu). */
+  private dogfightContext(withInput: boolean): { input: WeaponInput; opponents: readonly Combatant[] } {
+    const i = this.input;
+    const w = this.weaponInput;
+    const live = withInput && !this.mpMenuOpen;
+    const missilePressed = i.consumePressed('fireMissile');
+    const flaresPressed = i.consumePressed('releaseFlares');
+    w.fireGun = live && i.isDown('fireGun');
+    w.fireMissile = live && missilePressed;
+    w.fireMissileHeld = live && i.isDown('fireMissile');
+    w.releaseFlares = live && flaresPressed;
+    this.updateOpponents();
+    return { input: w, opponents: this.oppList };
+  }
+
+  /** Refreshes the remote opponent combatants from the interpolated snapshots (unknown ones are skipped). */
+  private updateOpponents(): void {
+    const df = this.dogfight;
+    this.oppList.length = 0;
+    const now = performance.now();
+    for (const [id, o] of this.opponents) {
+      const c = o.combatant;
+      const snap = df && df.isOpponent(id) ? this.net.getRemoteSnapshot(id, now, o.snap) : null;
+      if (!df || !snap) {
+        c.alive = false;
+        continue;
+      }
+      c.afterburner = snap.afterburner;
+      c.alive = df.isOpponentAlive(id);
+      this.oppList.push(c);
+    }
+  }
+
+  /** Radar contacts of the current mode: gates, AI racers, ghost, other players, missiles, flares, airfield. */
+  private updateRadar(): void {
+    const list = this.radarList;
+    list.clear();
+    addAirfieldContact(list, this.heightField.runway);
+    const race = this.race;
+    if (race) {
+      addGateContacts(list, race.course.gates, race.player.gateIndex, 4, race.course.def.loop);
+      for (const ai of race.ais) addJetContact(list, 'ai', ai.jet.position, ai.jet.flight.state.orientation, ai.name);
+      const ghost = race.ghost;
+      if (ghost) addJetContact(list, 'ghost', ghost.position, ghost.flight.state.orientation);
+    } else if (this.school?.progress && this.school.gates.length) {
+      addGateContacts(list, this.school.gates, this.school.progress.gateIndex, 4, false);
+    } else if (this.practice) {
+      addGateContacts(list, this.practice.gates, this.practice.progress.gateIndex, 4, false);
+    }
+    const df = this.dogfight;
+    if (this.mpGame) {
+      for (const [id, p] of this.remotes.puppets) {
+        if (!p.jet.object.visible) continue;
+        const enemy = df !== null && df.isOpponent(id);
+        if (enemy && !df.isOpponentAlive(id)) continue;
+        addJetContact(list, enemy ? 'enemy' : 'player', p.jet.object.position, p.jet.object.quaternion, this.net.players.get(id)?.name);
+      }
+    }
+    if (df) {
+      const w = df.weapons;
+      addMissileContacts(list, w.missiles, w.selfId);
+      addMissileContacts(list, w.remoteMissiles, w.selfId);
+      for (const f of w.flares) list.add('flare', f.position.x, f.position.y, f.position.z);
+    }
+    const s = this.jet.flight.state;
+    this.radar.update({ self: selfFromPose(s.position, s.orientation, this.radarSelf), contacts: list.items, zone: df ? df.radarZone() : null });
   }
 
   // ---------------------------------------------------------------- multiplayer
@@ -803,17 +1044,26 @@ export class Game {
     const i = this.input;
     const flying = this.mode !== 'menu';
     if (i.consumePressed('pause') && flying) {
-      if (this.race?.state === 'finished') {
+      if (this.race?.state === 'finished' || this.dogfight?.finished) {
         if (this.mpGame) this.backToLobby();
         else this.showMenu();
       } else this.setPaused(this.mpGame ? !this.mpMenuOpen : !this.paused);
     }
     if (i.consumePressed('fullscreen')) void this.toggleFullscreen();
     if (!flying || this.paused || this.mpMenuOpen) return;
+    if (i.consumePressed('radarZoom')) this.radar.cycleRange();
+    if (!this.dogfight) {
+      // Weapons only exist in Dogfight: drop stray presses so they can't fire later.
+      i.consumePressed('fireMissile');
+      i.consumePressed('releaseFlares');
+    }
     const leverNotice = i.consumeThrottleLeverNotice();
     if (leverNotice) this.hud.showMessage(leverNotice, 3);
     if (i.consumePressed('respawn')) this.restart();
-    if (i.consumePressed('toggleCamera')) this.cameras.toggle(this.cameraTarget);
+    if (i.consumePressed('toggleCamera')) {
+      if (this.mpGame && this.forcedView) this.hud.showMessage(`The host locked the ${this.forcedView} view`, 1.5);
+      else this.cameras.toggle(this.cameraTarget);
+    }
     if (i.consumePressed('toggleHelp')) this.hud.setHelpVisible(!this.hud.helpVisible);
     if (i.consumePressed('toggleGear')) {
       if (this.ground.grounded) this.hud.showMessage('Gear locked on the ground', 1.5);
@@ -841,17 +1091,22 @@ export class Game {
       race.fixedUpdateAIs(dt, this.heightField, this.weather, this.collision);
     }
 
+    const df = this.dogfight;
     if (this.phase === 'crashed') {
+      // Dogfight: the match decides when to respawn (hooks.respawn); keep its clock and projectiles running.
+      if (df) return df.fixedUpdate(dt, this.dogfightContext(false));
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0) this.respawnAfterCrash();
       return;
     }
     if (race?.frozen) return;
+    if (df?.frozen) return df.fixedUpdate(dt, this.dogfightContext(false));
 
     this.flightTime += dt;
     const jet = this.jet;
     this.weather.apply(jet.flight, this.collision.altitudeAboveGround(jet.position));
-    jet.fixedUpdate(dt, this.input.getFlightControls());
+    // G-LOC: the pilot is out cold, the stick goes neutral and the throttle stays where it was.
+    jet.fixedUpdate(dt, this.gforce.unconscious ? NO_FLIGHT_CONTROLS : this.input.getFlightControls());
 
     const groundEvent = this.ground.update(jet, dt);
     if (groundEvent === 'hardLanding') return this.crash('hardLanding');
@@ -893,10 +1148,6 @@ export class Game {
         this.rings.showProgress(r.finished ? pr.gates.length : pr.progress.gateIndex);
         if (r.finished) this.onPracticeComplete();
       }
-    } else if (this.freeProgress) {
-      const r = this.freeProgress.update(this.before, this.after, this.freeGates, this.flightTime);
-      if (r?.kind === 'passed') this.audio.playGatePass();
-      if (r) this.rings.showProgress(this.freeProgress.gateIndex);
     }
 
     // Collisions (same rules as the AI racers: ImpactTracker)
@@ -908,6 +1159,9 @@ export class Game {
       this.hud.showMessage(hit.tree ? 'Tree strike!' : 'Wing scrape!', 1.2);
       if (hit.destroyed) return this.crash('damage');
     }
+
+    // Dogfight: weapons, zone and match (after the jet moved and collided).
+    if (df) df.fixedUpdate(dt, this.dogfightContext(!this.gforce.unconscious));
 
     // Flight school objective (checked after collisions: a crash restarts the lesson instead).
     const school = this.school;
@@ -977,12 +1231,21 @@ export class Game {
     }
 
     this.explosion.update(dt, (x, z) => this.heightField.getSurfaceHeight(x, z));
+    for (const e of this.opponentExplosions) e.update(dt, (x, z) => this.heightField.getSurfaceHeight(x, z));
     this.rings.animate(this.time);
     this.remotes.setVisible(this.mpGame);
     if (this.mpGame) this.remotes.render(performance.now(), this.time, dt);
+    const df = this.dogfight;
+    if (df) {
+      for (const id of this.opponents.keys()) {
+        if (df.isOpponentAlive(id)) continue;
+        const puppet = this.remotes.puppets.get(id);
+        if (puppet) puppet.visible = false;
+      }
+    }
     this.terrain.update(camera.position);
     this.props.update(camera.position);
-    this.river.update(camera.position, this.time);
+    updateWater(this.time);
     this.clouds.update(camera, this.weather.wind, dt);
     this.lights.follow(flying ? this.jet.object.position : this.tmp.copy(camera.position).setY(this.heightField.getHeightAt(camera.position.x, camera.position.z)));
     this.sky.update(camera.position);
@@ -1051,7 +1314,10 @@ export class Game {
     shakeOffset(this.time, crashed ? 0 : t.speed, agl, this.shakeImpulse, this.shake);
     this.shakeImpulse = Math.max(0, this.shakeImpulse - dt * 1.5);
     this.cameras.camera.position.add(this.shake.applyQuaternion(this.cameras.camera.quaternion));
-    jet.parts.canopy.visible = this.cameras.mode !== 'cockpit';
+    // The exterior includes a solid cockpit shell (and optional glTFs have no guaranteed interior).
+    // The seat view renders its own cockpit instead; chase retains the complete external airframe.
+    jet.object.visible = !crashed && this.cameras.mode !== 'cockpit';
+    jet.parts.canopy.visible = true;
 
     // Effects
     jet.object.updateMatrixWorld();
@@ -1074,7 +1340,7 @@ export class Game {
 
     // Multiplayer: share our state.
     if (this.mpGame && !crashed) {
-      const p = this.race?.player ?? this.freeProgress;
+      const p = this.race?.player;
       this.net.sendState(
         { position: flight.state.position, quaternion: flight.state.orientation, velocity: flight.state.velocity, throttle: flight.state.throttle, afterburner: t.afterburner, gate: p?.gateIndex ?? 0, lap: p?.lap ?? 1 },
         performance.now(),
@@ -1082,13 +1348,18 @@ export class Game {
     }
     this.netEventTimer += dt;
 
+    // Dogfight effects / HUD, then the radar (it redraws at most ~30 times per second itself).
+    this.dogfight?.frameUpdate(dt, { camera: this.cameras.camera, viewportHeight: this.renderer.domElement.clientHeight });
+    this.updateRadar();
+
     // Gate navigator: every frame, from the active camera, so it follows passes, misses and respawns at once.
-    const prog = this.race?.player ?? this.school?.progress ?? this.practice?.progress ?? this.freeProgress;
-    const navGates = this.race ? this.race.course.gates : this.school?.progress ? this.school.gates : this.practice ? this.practice.gates : this.freeGates;
+    // Free flight has no gates, so no navigator.
+    const prog = this.race?.player ?? this.school?.progress ?? this.practice?.progress ?? null;
+    const navGates = this.race ? this.race.course.gates : this.school?.progress ? this.school.gates : this.practice ? this.practice.gates : [];
     this.hud.nav.update(
       this.cameras.camera,
       prog && !prog.finished && !crashed
-        ? { gates: navGates, gateIndex: prog.gateIndex, lap: prog.lap, laps: prog.laps, loop: this.race ? this.race.course.def.loop : this.mode === 'free', position: flight.state.position }
+        ? { gates: navGates, gateIndex: prog.gateIndex, lap: prog.lap, laps: prog.laps, loop: this.race ? this.race.course.def.loop : false, position: flight.state.position }
         : null,
       dt,
     );
@@ -1099,7 +1370,6 @@ export class Game {
     const hudDt = this.hudTimer;
     this.hudTimer = 0;
     const s = flight.state;
-    const next = this.mode === 'free' && this.freeProgress ? this.freeGates[this.freeProgress.gateIndex] : undefined;
     this.hud.update(
       {
         phase: this.paused ? 'paused' : this.phase,
@@ -1114,16 +1384,17 @@ export class Game {
         aoa: t.aoa * RAD2DEG,
         stallWarning: t.stallWarning && !this.ground.grounded,
         pullUp,
-        ringsPassed: this.freeProgress?.totalGates ?? 0,
-        ringsTotal: this.freeGates.length,
-        nextRingDistance: next ? next.center.distanceTo(s.position) : null,
+        ringsPassed: 0,
+        ringsTotal: 0,
+        nextRingDistance: null,
         flightTime: this.flightTime,
         cameraMode: this.cameras.mode,
+        orientation: jet.object.quaternion,
         respawnIn: Math.max(0, this.respawnTimer),
         health: jet.damage.health,
         gearDown: jet.gearDown,
         airbrake: jet.airbrake,
-        showRings: this.mode === 'free',
+        showRings: false,
       },
       hudDt,
     );
@@ -1152,16 +1423,16 @@ export class Game {
     }
   }
 
-  /** Slow cinematic orbit over the valley behind the main menu. */
+  /** Slow cinematic flyover behind the main menu: down the canyon on Classic, an orbit of the air start elsewhere. */
   private updateMenuCamera(): void {
     const cam = this.cameras.camera;
-    const z = 1500 - this.time * 40;
-    const x = valleyCenterX(z);
-    const ground = this.heightField.getSurfaceHeight(x, z);
-    cam.position.set(x + Math.sin(this.time * 0.1) * 60, ground + 90, z);
-    const lz = z - 400;
+    const surfaceAt = (x: number, z: number): number => this.heightField.getSurfaceHeight(x, z);
+    const world = this.currentWorld;
+    if (!world.classicValleyCenterX && this.menuOrbitY === null) this.menuOrbitY = menuOrbitHeight(world, surfaceAt);
+    const p = menuCameraPose(world, this.time, surfaceAt, this.menuOrbitY ?? 0);
+    cam.position.set(...p.position);
     cam.up.copy(UP);
-    cam.lookAt(valleyCenterX(lz), this.heightField.getSurfaceHeight(valleyCenterX(lz), lz) + 40, lz);
+    cam.lookAt(...p.target);
   }
 
   private async toggleFullscreen(): Promise<void> {

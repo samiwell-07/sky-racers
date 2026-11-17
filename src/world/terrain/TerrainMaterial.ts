@@ -5,7 +5,8 @@ import { createTerrainTextures } from './terrainTextures';
 /**
  * Splat-mapped terrain material: grass, dirt, rock and snow textures blended in the shader by
  * height, slope and a large-scale variation noise, plus a tiling normal map. Rock uses
- * triplanar projection so cliffs are not stretched.
+ * triplanar projection so cliffs are not stretched. An optional vec2 vertex attribute `surface`
+ * (x = paved 0..1, y = sand 0..1; 0 where the geometry lacks it) adds asphalt and beach sand.
  */
 export function createTerrainMaterial(cfg: TerrainConfig, anisotropy: number, simple = false): MeshStandardMaterial {
   const tex = createTerrainTextures(anisotropy);
@@ -20,6 +21,8 @@ export function createTerrainMaterial(cfg: TerrainConfig, anisotropy: number, si
     tRock: { value: tex.rock },
     tDirt: { value: tex.dirt },
     tSnow: { value: tex.snow },
+    tSand: { value: tex.sand },
+    tAsphalt: { value: tex.asphalt },
     uScale: { value: 1 / cfg.detailTextureScale },
     uWater: { value: cfg.waterLevel },
   };
@@ -27,10 +30,10 @@ export function createTerrainMaterial(cfg: TerrainConfig, anisotropy: number, si
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTerrainPos;\nvarying vec3 vTerrainNormal;')
+      .replace('#include <common>', '#include <common>\nattribute vec2 surface;\nvarying vec2 vSurface;\nvarying vec3 vTerrainPos;\nvarying vec3 vTerrainNormal;')
       .replace(
         '#include <worldpos_vertex>',
-        '#include <worldpos_vertex>\nvTerrainPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvTerrainNormal = normalize(mat3(modelMatrix) * objectNormal);',
+        '#include <worldpos_vertex>\nvTerrainPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvTerrainNormal = normalize(mat3(modelMatrix) * objectNormal);\nvSurface = surface;',
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -39,6 +42,9 @@ export function createTerrainMaterial(cfg: TerrainConfig, anisotropy: number, si
         uniform sampler2D tRock;
         uniform sampler2D tDirt;
         uniform sampler2D tSnow;
+        uniform sampler2D tSand;
+        uniform sampler2D tAsphalt;
+        varying vec2 vSurface;
         uniform float uScale;
         uniform float uWater;
         varying vec3 vTerrainPos;
@@ -81,11 +87,15 @@ export function createTerrainMaterial(cfg: TerrainConfig, anisotropy: number, si
           col = mix(col, col * vec3(0.8, 0.88, 0.8), smoothstep(320.0, 480.0, p.y));
           // Wet sand / gravel along the river banks.
           col = mix(col, dirt * 0.8, 1.0 - smoothstep(uWater + 0.5, uWater + 3.5, p.y));
+          // Beaches.
+          col = mix(col, texture2D(tSand, uv * 0.9).rgb, clamp(vSurface.y, 0.0, 1.0));
           // Bare rock on steep slopes, and scree above the tree line.
           float rockiness = max(smoothstep(0.16, 0.32, slope + (macro - 0.5) * 0.12), smoothstep(520.0, 640.0, p.y + macro * 80.0) * 0.85);
           col = mix(col, rock, rockiness);
           float snowAmount = smoothstep(650.0, 760.0, p.y + macro * 90.0) * (1.0 - smoothstep(0.35, 0.6, slope));
           col = mix(col, snow, snowAmount);
+          // Roads, streets and the airfield: asphalt over everything else.
+          col = mix(col, texture2D(tAsphalt, uv * 1.7).rgb, clamp(vSurface.x, 0.0, 1.0));
           diffuseColor.rgb *= col;
         }`,
       )
@@ -95,7 +105,9 @@ export function createTerrainMaterial(cfg: TerrainConfig, anisotropy: number, si
         '#include <normal_fragment_maps>',
       );
   };
+  // Chunks without a `surface` attribute read (0, 0): no asphalt, no sand.
+  Object.assign(material, { defaultAttributeValues: { surface: [0, 0] } });
   if (simple) material.defines = { TERRAIN_SIMPLE: '' };
-  material.customProgramCacheKey = () => (simple ? 'terrain-splat-simple' : 'terrain-splat-v1');
+  material.customProgramCacheKey = () => (simple ? 'terrain-splat-simple-v2' : 'terrain-splat-v2');
   return material;
 }

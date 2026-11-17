@@ -7,6 +7,8 @@ export interface Snapshot {
   time: number;
   position: Vec3Tuple;
   quaternion: QuatTuple;
+  /** World velocity (m/s), used for missile guidance and gun lead on remote targets. */
+  velocity: Vec3Tuple;
   throttle: number;
   afterburner: boolean;
 }
@@ -25,7 +27,7 @@ const qa = new Quaternion();
 const qb = new Quaternion();
 
 function createSnapshot(): Snapshot {
-  return { time: 0, position: [0, 0, 0], quaternion: [0, 0, 0, 1], throttle: 0, afterburner: false };
+  return { time: 0, position: [0, 0, 0], quaternion: [0, 0, 0, 1], velocity: [0, 0, 0], throttle: 0, afterburner: false };
 }
 
 function copyInto(out: Snapshot, s: Snapshot): Snapshot {
@@ -37,6 +39,9 @@ function copyInto(out: Snapshot, s: Snapshot): Snapshot {
   out.quaternion[1] = s.quaternion[1];
   out.quaternion[2] = s.quaternion[2];
   out.quaternion[3] = s.quaternion[3];
+  out.velocity[0] = s.velocity[0];
+  out.velocity[1] = s.velocity[1];
+  out.velocity[2] = s.velocity[2];
   out.throttle = s.throttle;
   out.afterburner = s.afterburner;
   return out;
@@ -137,6 +142,7 @@ export class SnapshotBuffer {
     out.quaternion[2] = qa.z;
     out.quaternion[3] = qa.w;
     const tc = Math.min(1, Math.max(0, t));
+    for (let k = 0; k < 3; k++) out.velocity[k] = a.velocity[k] + (b.velocity[k] - a.velocity[k]) * tc;
     out.throttle = a.throttle + (b.throttle - a.throttle) * tc;
     out.afterburner = tc < 0.5 ? a.afterburner : b.afterburner;
     out.time = renderTime;

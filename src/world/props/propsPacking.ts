@@ -13,7 +13,8 @@ export const ROCK_STRIDE = 5;
 /** x, y, z, width, depth, wallHeight, roofHeight, heading. */
 export const BUILDING_STRIDE = 8;
 
-export const PROP_MESH_KINDS = ['conifer', 'broadleaf', 'rock', 'walls', 'roof'] as const;
+/** 'walls' + 'roof': gabled buildings; 'tower': flat-roofed city buildings (roofHeight 0). */
+export const PROP_MESH_KINDS = ['conifer', 'broadleaf', 'rock', 'walls', 'roof', 'tower'] as const;
 export type PropMeshKind = (typeof PROP_MESH_KINDS)[number];
 
 export interface InstanceArrays {
@@ -144,9 +145,14 @@ export function packCell(cell: CellData): PackedCell {
     writeColor(rock.colors, k, g, g * 0.98, g * 0.94);
   });
 
-  const walls = instanceArrays(cell.buildings.length);
-  const roof = instanceArrays(cell.buildings.length);
+  let towerCount = 0;
+  for (const b of cell.buildings) if (b.roofHeight === 0) towerCount++;
+  const walls = instanceArrays(cell.buildings.length - towerCount);
+  const roof = instanceArrays(cell.buildings.length - towerCount);
+  const tower = instanceArrays(towerCount);
   const buildings = new Float64Array(cell.buildings.length * BUILDING_STRIDE);
+  let wi = 0;
+  let ti = 0;
   cell.buildings.forEach((b, k) => {
     const o = k * BUILDING_STRIDE;
     buildings[o] = b.x;
@@ -158,10 +164,15 @@ export function packCell(cell: CellData): PackedCell {
     buildings[o + 6] = b.roofHeight;
     buildings[o + 7] = b.heading;
     grow(b.x, b.z, 25);
-    writeMatrix(walls.matrices, k, b.x, b.y, b.z, b.heading, b.width, b.wallHeight, b.depth);
-    writeHexColor(walls.colors, k, b.wallColor);
-    writeMatrix(roof.matrices, k, b.x, b.y + b.wallHeight, b.z, b.heading, b.width, b.roofHeight, b.depth);
-    writeHexColor(roof.colors, k, b.roofColor);
+    if (b.roofHeight === 0) {
+      writeMatrix(tower.matrices, ti, b.x, b.y, b.z, b.heading, b.width, b.wallHeight, b.depth);
+      writeHexColor(tower.colors, ti++, b.wallColor);
+      return;
+    }
+    writeMatrix(walls.matrices, wi, b.x, b.y, b.z, b.heading, b.width, b.wallHeight, b.depth);
+    writeHexColor(walls.colors, wi, b.wallColor);
+    writeMatrix(roof.matrices, wi, b.x, b.y + b.wallHeight, b.z, b.heading, b.width, b.roofHeight, b.depth);
+    writeHexColor(roof.colors, wi++, b.roofColor);
   });
 
   return {
@@ -177,7 +188,7 @@ export function packCell(cell: CellData): PackedCell {
     rocks,
     rockReach,
     buildings,
-    instances: { conifer, broadleaf, rock, walls, roof },
+    instances: { conifer, broadleaf, rock, walls, roof, tower },
   };
 }
 

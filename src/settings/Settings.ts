@@ -1,4 +1,6 @@
 import { JET_CATALOG } from '../entities/jet/jetCatalog';
+import { isLobbySettings, type LobbySettings } from '../net/lobbyTypes';
+import { snapRadarRange } from '../ui/radar/radarMath';
 import { browserStorage, isFiniteNumber, tryGetItem, tryParseJson, trySetItem, type KeyValueStorage } from './safeStorage';
 
 export type GraphicsQuality = 'low' | 'medium' | 'high';
@@ -45,6 +47,19 @@ export interface GameSettings {
   warningsVolume: number;
   /** Race conditions: 'standard' = fixed time-trial weather, 'custom' = the World settings. */
   raceConditions: 'standard' | 'custom';
+  /** HUD radar on/off. */
+  showRadar: boolean;
+  /** Radar range in metres (one of the radar zoom levels: 2, 5, 10 or 20 km). */
+  radarRange: number;
+  /** Solo free flight / race world: a seeded world (worldSeed) or the hand-made Classic Canyon. */
+  worldSource: 'seeded' | 'classic';
+  /** Last seed text typed or rolled (empty = roll a random one). */
+  worldSeed: string;
+  /** Generated races on seeded worlds. */
+  raceDifficulty: 'easy' | 'medium' | 'hard';
+  raceLayout: 'sprint' | 'loop';
+  /** Last server-confirmed settings hosted by this player, separate from solo settings. */
+  lobbySettings: LobbySettings | null;
 }
 
 export const DEFAULT_SETTINGS: Readonly<GameSettings> = Object.freeze({
@@ -80,6 +95,13 @@ export const DEFAULT_SETTINGS: Readonly<GameSettings> = Object.freeze({
   effectsVolume: 1,
   warningsVolume: 1,
   raceConditions: 'standard',
+  showRadar: true,
+  radarRange: 5000,
+  worldSource: 'seeded',
+  worldSeed: '',
+  raceDifficulty: 'medium',
+  raceLayout: 'loop',
+  lobbySettings: null,
 });
 
 export interface GraphicsPreset {
@@ -156,6 +178,13 @@ export const SETTINGS_VALIDATORS: Partial<Record<keyof GameSettings, Validator>>
   effectsVolume: num(0, 1),
   warningsVolume: num(0, 1),
   raceConditions: oneOf('standard', 'custom'),
+  showRadar: bool,
+  radarRange: (v) => (isFiniteNumber(v) ? accept(snapRadarRange(v)) : REJECT),
+  worldSource: oneOf('seeded', 'classic'),
+  worldSeed: str(32, true),
+  raceDifficulty: oneOf('easy', 'medium', 'hard'),
+  raceLayout: oneOf('sprint', 'loop'),
+  lobbySettings: (v) => (v === null || isLobbySettings(v) ? accept(v) : REJECT),
 };
 
 /**

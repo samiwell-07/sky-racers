@@ -1,0 +1,64 @@
+.hud-radar {
+  position: absolute;
+  right: 16px;
+  /* Above the bottom-right "CHASE · H help" line. */
+  bottom: 40px;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 2px solid rgba(184, 255, 207, 0.55);
+  background: radial-gradient(circle, rgba(0, 28, 14, 0.5) 0%, rgba(0, 18, 9, 0.62) 100%);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.35), inset 0 0 18px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  zoom: var(--hud-scale, 1);
+}
+
+.hud-radar.hidden {
+  display: none;
+}
+
+.hud-radar canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.hud-radar-range {
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  transform: translateX(-50%);
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(0, 18, 9, 0.85);
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+  color: #b8ffcf;
+}
+
+/* Player outside the combat zone. */
+.hud-radar.zone-out {
+  border-color: rgba(255, 70, 60, 0.85);
+}
+
+.hud-radar.zone-near {
+  border-color: rgba(255, 196, 74, 0.85);
+}
+
+/* Missile tracking us: the bezel flashes red. */
+.hud-radar.missile {
+  animation: hud-radar-flash 0.35s steps(2) infinite;
+}
+
+@keyframes hud-radar-flash {
+  0% {
+    border-color: #ff2a2a;
+    box-shadow: 0 0 0 3px rgba(255, 30, 30, 0.6), 0 0 16px rgba(255, 30, 30, 0.8), inset 0 0 18px rgba(255, 0, 0, 0.45);
+  }
+  100% {
+    border-color: rgba(255, 60, 60, 0.35);
+  }
+}

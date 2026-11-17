@@ -12,7 +12,16 @@ export interface AxisSettings {
   throttleMax?: number;
 }
 
-export type GamepadButtonAction = 'toggleCamera' | 'respawn' | 'pause' | 'toggleGear' | 'airbrake';
+export type GamepadButtonAction =
+  | 'toggleCamera'
+  | 'respawn'
+  | 'pause'
+  | 'toggleGear'
+  | 'airbrake'
+  | 'fireGun'
+  | 'fireMissile'
+  | 'releaseFlares'
+  | 'radarZoom';
 
 export interface GamepadState {
   connected: boolean;
@@ -31,6 +40,9 @@ export interface GamepadState {
   pressed: Set<GamepadButtonAction>;
   /** True while the airbrake button is held. */
   airbrakeHeld: boolean;
+  /** True while the gun (RB) / missile (LB) buttons are held. */
+  fireGunHeld: boolean;
+  fireMissileHeld: boolean;
   /** Menu navigation: held direction from the d-pad or left stick (-1, 0, 1; +y = down). */
   navX: number;
   navY: number;
@@ -52,8 +64,14 @@ const BUTTON_ACTIONS: ReadonlyArray<readonly [number, GamepadButtonAction]> = [
   [3, 'toggleCamera'],
   [8, 'respawn'],
   [9, 'pause'],
+  [5, 'fireGun'],
+  [4, 'fireMissile'],
+  [2, 'releaseFlares'],
+  [13, 'radarZoom'],
 ];
 const AIRBRAKE_BUTTON = 0;
+const FIRE_GUN_BUTTON = 5;
+const FIRE_MISSILE_BUTTON = 4;
 const CONFIRM_BUTTON = 0;
 const BACK_BUTTON = 1;
 const LT_BUTTON = 6;
@@ -93,6 +111,8 @@ function disconnected(): GamepadState {
     throttleAbsolute: null,
     pressed: new Set(),
     airbrakeHeld: false,
+    fireGunHeld: false,
+    fireMissileHeld: false,
     navX: 0,
     navY: 0,
     confirmHeld: false,
@@ -196,6 +216,8 @@ export class GamepadInput {
       throttleAbsolute,
       pressed,
       airbrakeHeld: !!now[AIRBRAKE_BUTTON],
+      fireGunHeld: !!now[FIRE_GUN_BUTTON],
+      fireMissileHeld: !!now[FIRE_MISSILE_BUTTON],
       navX: dir(!!now[DPAD_LEFT], !!now[DPAD_RIGHT], lx),
       navY: dir(!!now[DPAD_UP], !!now[DPAD_DOWN], ly),
       confirmHeld: !!now[CONFIRM_BUTTON],

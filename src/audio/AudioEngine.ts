@@ -432,8 +432,189 @@ export class AudioEngine {
     this.track(src, ng);
   }
 
+  // ---- dogfight weapons (synthesized; all on the effects bus except the warning tones) ----
+
+  /** Gun burst: `rounds` cannon reports spaced at the rate of fire. `gain` < 1 for a distant gun. */
+  playGunBurst(rounds = 1, gain = 1, interval = 0.04): void {
+    const g = this.ready();
+    if (!g || gain <= 0.01) return;
+    const ctx = g.ctx;
+    const t0 = ctx.currentTime;
+    for (let i = 0; i < Math.min(rounds, 6); i++) {
+      const t = t0 + i * interval;
+      const src = this.noiseSource(g);
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 900 + Math.random() * 300;
+      bp.Q.value = 0.8;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.linearRampToValueAtTime(0.45 * gain, t + 0.003);
+      env.gain.setTargetAtTime(0, t + 0.01, 0.025);
+      src.connect(bp).connect(env).connect(g.effectsBus);
+      src.start(t, Math.random() * 1.5);
+      src.stop(t + 0.15);
+      this.track(src, env);
+      this.tone(g, g.effectsBus, 70, 'square', 0.06, 0.18 * gain, t, 400);
+    }
+  }
+
+  /** Missile motor ignition: a rising whoosh. */
+  playMissileLaunch(gain = 1): void {
+    const g = this.ready();
+    if (!g || gain <= 0.01) return;
+    const ctx = g.ctx;
+    const t = ctx.currentTime;
+    const src = this.noiseSource(g);
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.Q.value = 1.2;
+    filt.frequency.setValueAtTime(300, t);
+    filt.frequency.exponentialRampToValueAtTime(2500, t + 0.6);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.linearRampToValueAtTime(0.7 * gain, t + 0.05);
+    env.gain.setTargetAtTime(0, t + 0.4, 0.35);
+    src.connect(filt).connect(env).connect(g.effectsBus);
+    src.start(t, Math.random() * 1.5);
+    src.stop(t + 2);
+    this.track(src, env);
+  }
+
+  /** Flare salvo: `count` dull pops with a hiss. */
+  playFlarePop(count = 2, gain = 1): void {
+    const g = this.ready();
+    if (!g || gain <= 0.01) return;
+    const t = g.ctx.currentTime;
+    for (let i = 0; i < Math.min(count, 4); i++) {
+      this.tone(g, g.effectsBus, 180 - i * 20, 'triangle', 0.08, 0.3 * gain, t + i * 0.07, 900);
+      const src = this.noiseSource(g);
+      const hp = g.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 3000;
+      const env = g.ctx.createGain();
+      env.gain.setValueAtTime(0.12 * gain, t + i * 0.07);
+      env.gain.setTargetAtTime(0, t + i * 0.07 + 0.02, 0.12);
+      src.connect(hp).connect(env).connect(g.effectsBus);
+      src.start(t + i * 0.07, Math.random() * 1.5);
+      src.stop(t + i * 0.07 + 0.8);
+      this.track(src, env);
+    }
+  }
+
+  /** Short bright tick confirming that our rounds hit. */
+  playHitMarker(): void {
+    const g = this.ready();
+    if (!g) return;
+    const t = g.ctx.currentTime;
+    this.tone(g, g.effectsBus, 2400, 'square', 0.035, 0.08, t, 5000);
+  }
+
+  /** Missile detonation: a shorter, lighter crash. `gain` scales with distance. */
+  playExplosion(gain = 1): void {
+    const g = this.ready();
+    if (!g || gain <= 0.01) return;
+    const ctx = g.ctx;
+    const t = ctx.currentTime;
+    const src = this.noiseSource(g);
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.setValueAtTime(4000, t);
+    filt.frequency.setTargetAtTime(250, t, 0.2);
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.linearRampToValueAtTime(0.75 * gain, t + 0.01);
+    ng.gain.setTargetAtTime(0, t + 0.04, 0.3);
+    src.connect(filt).connect(ng).connect(g.effectsBus);
+    src.start(t, Math.random() * 1.5);
+    src.stop(t + 1.6);
+    this.track(src, ng);
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(110, t);
+    osc.frequency.exponentialRampToValueAtTime(35, t + 0.8);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.linearRampToValueAtTime(0.7 * gain, t + 0.01);
+    og.gain.setTargetAtTime(0, t + 0.04, 0.3);
+    osc.connect(og).connect(g.effectsBus);
+    osc.start(t);
+    osc.stop(t + 1.6);
+    this.track(osc, og);
+  }
+
+  /**
+   * Seeker and missile-warning tones; call every frame (null = silence, e.g. paused or not in a
+   * dogfight). lock 0..1: a growing beep while the seeker builds the lock, a steady tone at 1.
+   * incoming: fast warning beeps while an enemy missile tracks us.
+   */
+  updateCombatTones(state: { lock: number; incomingMissile: boolean } | null, dt: number): void {
+    const g = this.ready();
+    const lock = state ? Math.min(Math.max(state.lock, 0), 1) : 0;
+    const steady = this.ensureLockTone(g);
+    if (steady && g) steady.gain.gain.setTargetAtTime(lock >= 1 ? 0.13 : 0, g.ctx.currentTime, 0.02);
+    if (!g || !state) {
+      this.lockBeepTimer = 0;
+      this.missileWarnTimer = 0;
+      return;
+    }
+    const t = g.ctx.currentTime;
+    if (lock > 0 && lock < 1) {
+      this.lockBeepTimer -= dt;
+      if (this.lockBeepTimer <= 0) {
+        this.tone(g, g.warningsBus, 900 + lock * 500, 'sine', 0.06, 0.07 + lock * 0.06, t);
+        this.lockBeepTimer = 0.32 - lock * 0.24;
+      }
+    } else {
+      this.lockBeepTimer = 0;
+    }
+    if (state.incomingMissile) {
+      this.missileWarnTimer -= dt;
+      if (this.missileWarnTimer <= 0) {
+        this.tone(g, g.warningsBus, 2100, 'square', 0.05, 0.12, t, 4500);
+        this.tone(g, g.warningsBus, 1600, 'square', 0.05, 0.12, t + 0.06, 4500);
+        this.missileWarnTimer = 0.14;
+      }
+    } else {
+      this.missileWarnTimer = 0;
+    }
+  }
+
+  private lockBeepTimer = 0;
+  private missileWarnTimer = 0;
+  private lockTone: { ctx: AudioContext; osc: OscillatorNode; gain: GainNode } | null = null;
+
+  /** The steady "locked" tone: one persistent oscillator per audio context, gated by its gain. */
+  private ensureLockTone(g: Graph | null): { gain: GainNode } | null {
+    if (!g) return this.lockTone && this.lockTone.ctx.state === 'running' ? this.lockTone : null;
+    if (this.lockTone?.ctx === g.ctx) return this.lockTone;
+    this.stopLockTone();
+    const osc = g.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 1550;
+    const gain = g.ctx.createGain();
+    gain.gain.value = 0;
+    osc.connect(gain).connect(g.warningsBus);
+    osc.start();
+    this.lockTone = { ctx: g.ctx, osc, gain };
+    return this.lockTone;
+  }
+
+  private stopLockTone(): void {
+    const lt = this.lockTone;
+    this.lockTone = null;
+    if (!lt) return;
+    try {
+      lt.osc.stop();
+    } catch {
+      /* already stopped */
+    }
+    lt.gain.disconnect();
+  }
+
   dispose(): void {
     this.disposed = true;
+    this.stopLockTone();
     const g = this.graph;
     this.graph = null;
     this.lastPos.clear();

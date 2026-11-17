@@ -12,16 +12,27 @@ export interface WeatherSettings {
   turbulence: number;
 }
 
+/** 0..1 enclosure of a spot (WorldGenerator.canyonFactor). */
+export type CanyonFactorFn = (x: number, z: number) => number;
+
+/** Classic world: inside the canyon around the valley centerline. */
+export const classicCanyonFactor: CanyonFactorFn = (x, z) => 1 - smoothstep(150, 400, Math.abs(x - valleyCenterX(z)));
+
 /**
- * Wind and turbulence. Turbulence is strongest low in the canyon (rotor and gusts off the walls)
+ * Wind and turbulence. Turbulence is strongest low in a canyon (rotor and gusts off the walls)
  * and fades with altitude above the ground.
  */
 export class Weather {
   readonly wind = new Vector3();
   private time = 0;
 
-  constructor(public settings: WeatherSettings) {
+  constructor(public settings: WeatherSettings, private canyonFactor: CanyonFactorFn = classicCanyonFactor) {
     this.updateWind();
+  }
+
+  /** Switch worlds: pass the new world's canyonFactor (e.g. `(x, z) => world.canyonFactor(x, z)`). */
+  setCanyonFactor(fn: CanyonFactorFn): void {
+    this.canyonFactor = fn;
   }
 
   updateWind(): void {
@@ -31,7 +42,7 @@ export class Weather {
 
   /** Intensity 0..1 of the turbulence at a position. */
   turbulenceAt(position: Vector3, agl: number): number {
-    const inCanyon = 1 - smoothstep(150, 400, Math.abs(position.x - valleyCenterX(position.z)));
+    const inCanyon = this.canyonFactor(position.x, position.z);
     const low = 1 - smoothstep(30, 250, agl);
     return this.settings.turbulence * (0.25 + 0.75 * Math.max(inCanyon * low, low * 0.5));
   }

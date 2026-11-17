@@ -2,6 +2,9 @@ import { RUNWAY_CONFIG, type RunwayConfig, type TerrainConfig } from '../../conf
 import { clamp, lerp, smoothstep } from '../../utils/math';
 import { SimplexNoise2D } from '../../utils/noise';
 import { mulberry32 } from '../../utils/random';
+// Circular import (ClassicWorld uses this module's classic functions): only used at runtime, in the constructor.
+import { ClassicWorld } from '../gen/ClassicWorld';
+import type { WorldGenerator } from '../gen/WorldGenerator';
 
 /**
  * X coordinate of the valley centerline at a given Z: a meandering path running along the Z axis.
@@ -194,19 +197,33 @@ export function createHeightFunction(cfg: TerrainConfig, runway: RunwayConfig = 
   };
 }
 
+
 /**
- * Infinite terrain sampled on a regular grid (cellSize = chunkSize / chunkSegments).
+ * Infinite terrain of a world sampled on a regular grid (cellSize = chunkSize / chunkSegments).
  * getHeightAt() interpolates over the exact same triangles the full-detail terrain renders,
  * so collision matches what the player sees close up.
+ *
+ * `new HeightField(world)` wraps any WorldGenerator (see createWorld). The legacy form
+ * `new HeightField(config, heightFn?)` is the Classic Canyon (optionally with a test height function).
  */
 export class HeightField {
   readonly cellSize: number;
+  readonly config: TerrainConfig;
+  readonly world: WorldGenerator;
+  readonly heightFn: (x: number, z: number) => number;
   private readonly cache = new Map<number, number>();
-  private readonly rect: RunwayRect;
 
-  constructor(readonly config: TerrainConfig, readonly heightFn = createHeightFunction(config)) {
-    this.cellSize = config.chunkSize / config.chunkSegments;
-    this.rect = runwayRect();
+  constructor(source: TerrainConfig | WorldGenerator, heightFn?: (x: number, z: number) => number) {
+    if (isWorld(source)) {
+      this.world = source;
+      this.heightFn = heightFn ?? ((x, z) => source.heightAt(x, z));
+    } else {
+      const classic = new ClassicWorld(source, heightFn ?? createHeightFunction(source));
+      this.world = classic;
+      this.heightFn = classic.heightAt;
+    }
+    this.config = this.world.config;
+    this.cellSize = this.config.chunkSize / this.config.chunkSegments;
   }
 
   /** Height at grid vertex (i, j) = world (i * cellSize, j * cellSize). Cached. */
@@ -238,20 +255,30 @@ export class HeightField {
     return h11 + (h01 - h11) * (1 - fx) + (h10 - h11) * (1 - fz);
   }
 
-  /** True if (x, z) is over the river. */
-  isRiver(x: number, z: number): boolean {
-    const c = this.config;
-    return Math.abs(x - valleyCenterX(z)) < c.riverHalfWidth + 12 && distanceToRunway(x, z, this.rect, 25) > 40;
+  /** Water surface (sea, river, lake) at (x, z), or -Infinity on dry land. */
+  waterLevelAt(x: number, z: number): number {
+    return this.world.waterLevelAt(x, z);
   }
 
-  /** Solid surface height: ground, or the water surface over the river. */
+  /** True if (x, z) is over water (sea, river or lake). */
+  isWater(x: number, z: number): boolean {
+    return this.world.waterLevelAt(x, z) > -Infinity;
+  }
+
+  /** True if (x, z) is over water. Kept for the Classic Canyon, whose only water is its river. */
+  isRiver(x: number, z: number): boolean {
+    return this.isWater(x, z);
+  }
+
+  /** Solid surface height: ground, or the water surface where it is above the ground. */
   getSurfaceHeight(x: number, z: number): number {
     const ground = this.getHeightAt(x, z);
-    return this.isRiver(x, z) ? Math.max(ground, this.config.waterLevel) : ground;
+    const water = this.world.waterLevelAt(x, z);
+    return water > ground ? water : ground;
   }
 
   get runway(): RunwayRect {
-    return this.rect;
+    return this.world.airfield;
   }
 
   /** Smooth surface normal from central differences of the height function (seamless across chunks). */
@@ -268,4 +295,8 @@ export class HeightField {
     out.y = ny / len;
     out.z = nz / len;
   }
+}
+
+function isWorld(source: TerrainConfig | WorldGenerator): source is WorldGenerator {
+  return typeof (source as WorldGenerator).heightAt === 'function';
 }

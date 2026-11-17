@@ -14,6 +14,10 @@ export const KEY_BINDINGS = {
   pause: ['KeyP', 'Escape'],
   toggleHelp: ['KeyH'],
   fullscreen: ['KeyF'],
+  fireGun: ['Space'],
+  fireMissile: ['KeyQ'],
+  releaseFlares: ['KeyE'],
+  radarZoom: ['KeyZ'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type InputAction = keyof typeof KEY_BINDINGS;
@@ -33,6 +37,10 @@ export const ACTION_LABELS: Record<InputAction, string> = {
   pause: 'Pause menu',
   toggleHelp: 'Show / hide help',
   fullscreen: 'Fullscreen',
+  fireGun: 'Fire gun (hold)',
+  fireMissile: 'Fire missile (hold to wait for lock)',
+  releaseFlares: 'Release flares',
+  radarZoom: 'Radar zoom',
 };
 
 export interface ControlsConfig {

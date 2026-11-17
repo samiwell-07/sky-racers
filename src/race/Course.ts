@@ -2,6 +2,7 @@ import { Vector3 } from 'three';
 import { GATE_CONFIG, JET_SIZE, LANDMARKS } from '../config/worldConfig';
 import { LOOP_LAYOUT, loopPasses, runwayRect, valleyCenterX, type HeightField, type PassArc } from '../world/terrain/HeightField';
 import type { RingShape } from '../world/rings/ringMath';
+import type { WorldSpec } from '../world/gen/WorldGenerator';
 
 /** Course definition (gate positions on the ground plane). Heights are relative to the ground. */
 export interface CourseDef {
@@ -17,6 +18,8 @@ export interface CourseDef {
   medals?: { gold: number; silver: number; bronze: number };
   /** Course rules version (part of the record category); bump when the course changes meaningfully. */
   version?: number;
+  /** World the course belongs to (generated courses). Missing = the Classic Canyon. */
+  world?: WorldSpec;
 }
 
 export interface ResolvedCourse {

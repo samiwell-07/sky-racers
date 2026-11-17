@@ -4,6 +4,7 @@ export interface CameraTarget {
   position: Vector3;
   quaternion: Quaternion;
   speed: number;
+  cockpitEye?: Vector3;
 }
 
 export interface CameraController {

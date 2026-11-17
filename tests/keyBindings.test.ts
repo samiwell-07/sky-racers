@@ -37,10 +37,10 @@ describe('KeyBindings', () => {
 
   it('ignores unknown actions and falls back to defaults on corrupt JSON', () => {
     const kb = new KeyBindings(
-      memoryStorage({ 'sfr.keybindings': JSON.stringify({ bogus: ['KeyQ'], respawn: ['KeyT'] }) }),
+      memoryStorage({ 'sfr.keybindings': JSON.stringify({ bogus: ['KeyJ'], respawn: ['KeyT'] }) }),
     );
     expect(kb.get('respawn')).toEqual(['KeyT']);
-    expect(kb.actionsFor('KeyQ')).toEqual([]);
+    expect(kb.actionsFor('KeyJ')).toEqual([]);
     expect(kb.get('pause')).toEqual(KEY_BINDINGS.pause);
 
     const corrupt = new KeyBindings(memoryStorage({ 'sfr.keybindings': '{not json' }));

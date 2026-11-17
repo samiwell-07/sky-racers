@@ -115,7 +115,7 @@ export class HangarPreview {
     this.jetId = def.id;
     const gen = ++this.generation;
     const holder = new Group();
-    const parts = buildJetModel(def.paint);
+    const parts = buildJetModel(def.paint, def.id);
     holder.add(parts.root);
     // Center the airframe so it spins around its middle.
     const box = new Box3().setFromObject(parts.root);

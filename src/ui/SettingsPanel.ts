@@ -16,7 +16,10 @@ export class SettingsPanel {
     private readonly input: InputManager,
   ) {}
 
-  render(onBack: () => void): HTMLElement {
+  /** `lockWorld`: in a multiplayer lobby the world/weather belong to the lobby (its host edits them), so no World tab. */
+  render(onBack: () => void, lockWorld = false): HTMLElement {
+    const tabs: Tab[] = lockWorld ? ['graphics', 'audio', 'controls'] : ['graphics', 'audio', 'controls', 'world'];
+    if (!tabs.includes(this.tab)) this.tab = 'graphics';
     const panel = h('div', { class: 'menu-panel' });
     const draw = (): void => {
       panel.replaceChildren(
@@ -24,7 +27,7 @@ export class SettingsPanel {
         h(
           'div',
           { class: 'menu-tabs' },
-          ...(['graphics', 'audio', 'controls', 'world'] as Tab[]).map((t) =>
+          ...tabs.map((t) =>
             button(t[0]!.toUpperCase() + t.slice(1), () => {
               this.tab = t;
               draw();
@@ -56,6 +59,10 @@ export class SettingsPanel {
                     select<GameSettings['hudLayout']>('Instruments', [['detailed', 'Detailed'], ['compact', 'Compact']], () => s.hudLayout, set('hudLayout')),
                     slider('HUD scale', 0.75, 1.5, 0.05, () => s.hudScale, set('hudScale'), (v) => `${Math.round(v * 100)}%`),
                     h('p', { class: 'menu-sub' }, 'Compact shows speed, height above ground, throttle, health and gear/brake. Warnings, gate guidance and the race clock always stay. The HUD shrinks automatically in small windows.'),
+          h('h3', {}, 'Radar'),
+          checkbox('Show radar', () => s.showRadar, set('showRadar')),
+          select<string>('Radar range', [['2000', '2 km'], ['5000', '5 km'], ['10000', '10 km'], ['20000', '20 km']], () => String(s.radarRange), (v) => this.store.set('radarRange', Number(v))),
+          h('p', { class: 'menu-sub' }, 'Heading-up radar in every flying mode: gates, other jets, missiles and the dogfight zone. The radar zoom key cycles the range in flight.'),
         );
         break;
       case 'audio':

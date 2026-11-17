@@ -1,6 +1,12 @@
 import { SimplexNoise2D } from '../../utils/noise';
 import { mulberry32 } from '../../utils/random';
 import { smoothstep } from '../../utils/math';
+import type { BridgeSite, CitySite, RoadSegment } from '../gen/WorldGenerator';
+import type { RunwayRect } from '../terrain/HeightField';
+import { cityBuildings } from '../gen/settlements/cityLayout';
+import type { CityBuilding } from '../gen/settlements/cityLayout';
+import { DECK_THICKNESS, PARAPET_HEIGHT, PIER_HALF, ROAD_HALF_WIDTH } from '../gen/settlements/types';
+import type { BridgeSpan, RoadPiece } from '../gen/settlements/types';
 
 /**
  * Pure, deterministic prop placement. The same plain data feeds both the renderer (PropsManager)
@@ -21,15 +27,41 @@ export interface ClearZone {
   heading: number;
 }
 
+/**
+ * The settlement queries of a seeded world that placement needs (a WorldGenerator satisfies it).
+ * Do NOT pass one for the Classic world: Classic placement must stay exactly as it was.
+ */
+export interface PlacementWorld {
+  waterLevelAt(x: number, z: number): number;
+  citiesNear(x: number, z: number, radius: number): readonly CitySite[];
+  roadsNear(x: number, z: number, radius: number): readonly RoadSegment[];
+  bridgesNear(x: number, z: number, radius: number): readonly BridgeSite[];
+  /** Kept clear of props automatically (runway, taxiway and apron). */
+  readonly airfield?: RunwayRect;
+}
+
 export interface PlacementOptions {
   seed: number;
   heightAt: (x: number, z: number) => number;
-  valleyCenterX: (z: number) => number;
+  /** Classic valley: trees keep clear of its flight corridor; required for powerLineZ / archZ. */
+  valleyCenterX?: (z: number) => number;
   powerLineZ?: readonly number[];
   archZ?: readonly number[];
   clearZones?: readonly ClearZone[];
   /** Candidate density multiplier (1 = full). */
   density?: number;
+  /** Seeded worlds: no props on roads, water, city streets or the airfield, plus the cities' buildings. */
+  world?: PlacementWorld;
+}
+
+/** Placement for a seeded world (shared by PropsManager and the props worker so both build the same props). */
+export function seededPlacement(
+  seed: number,
+  world: PlacementWorld & { heightAt(x: number, z: number): number },
+  clearZones?: readonly ClearZone[],
+  density = 1,
+): PlacementOptions {
+  return { seed, heightAt: (x, z) => world.heightAt(x, z), world, clearZones, density };
 }
 
 export type TreeKind = 'conifer' | 'broadleaf';
@@ -397,17 +429,31 @@ const exclusionCache = new WeakMap<PlacementOptions, ExclusionSet>();
 function getExclusions(options: PlacementOptions): ExclusionSet {
   let e = exclusionCache.get(options);
   if (!e) {
-    e = { zones: (options.clearZones ?? []).map(clearZoneExclusion), features: featureExclusions(getFeatures(options)) };
+    const zones = (options.clearZones ?? []).map(clearZoneExclusion);
+    const a = options.world?.airfield;
+    if (a) zones.push(clearZoneExclusion(airfieldClearZone(a)));
+    e = { zones, features: featureExclusions(getFeatures(options)) };
     exclusionCache.set(options, e);
   }
   return e;
 }
 
+/** Runway plus the taxiway and apron on its +X side (see the settlement layer's airfieldPavedAt). */
+export function airfieldClearZone(a: RunwayRect): ClearZone {
+  return { x: a.x + 70, z: a.z, halfWidth: a.halfWidth + 125, halfLength: a.halfLength + 300, heading: 0 };
+}
+
+function requireCenterline(options: PlacementOptions): (z: number) => number {
+  if (!options.valleyCenterX) throw new Error('Power lines and arches need PlacementOptions.valleyCenterX');
+  return options.valleyCenterX;
+}
+
 /** Power line crossing the valley at z: pylons on both rims, three sagging cables ≥ 70 m above the floor. */
 export function generatePowerLine(z: number, options: PlacementOptions): PowerLineData {
   const { heightAt } = options;
-  const cx = options.valleyCenterX(z);
-  const [dx, dz] = centerlineDirection(options.valleyCenterX, z);
+  const valleyCenterX = requireCenterline(options);
+  const cx = valleyCenterX(z);
+  const [dx, dz] = centerlineDirection(valleyCenterX, z);
   const px = -dz;
   const pz = dx;
   const heading = Math.atan2(-dz, dx);
@@ -495,8 +541,9 @@ export function generatePowerLine(z: number, options: PlacementOptions): PowerLi
 /** Stone arch bridge spanning the valley at z, perpendicular to the valley direction. */
 export function generateArch(z: number, options: PlacementOptions): ArchData {
   const { heightAt } = options;
-  const cx = options.valleyCenterX(z);
-  const [dx, dz] = centerlineDirection(options.valleyCenterX, z);
+  const valleyCenterX = requireCenterline(options);
+  const cx = valleyCenterX(z);
+  const [dx, dz] = centerlineDirection(valleyCenterX, z);
   const px = -dz;
   const pz = dx;
   const heading = Math.atan2(-pz, px);
@@ -536,6 +583,109 @@ export function archOpeningTop(arch: ArchData, u: number): number {
 const HOUSE_WALLS = [0xf1ece0, 0xe8dcc0, 0xd9d2c5, 0xb8562f, 0xc9b48f];
 const ROOFS = [0x7a2e22, 0x5b4a42, 0x8a3b26, 0x4c5156];
 
+const NO_CENTERLINE = { distance: (_x: number, _z: number): number => Infinity };
+
+/** Largest exclusion margin passed to blockedBySettlement() (farms). */
+const SETTLEMENT_MAX_MARGIN = 60;
+
+/** Settlement data around one cell, queried once per cell. */
+interface SettlementContext {
+  world: PlacementWorld;
+  cities: readonly CitySite[];
+  roads: readonly RoadSegment[];
+}
+
+function settlementContext(world: PlacementWorld, x0: number, z0: number, size: number): SettlementContext {
+  const cx = x0 + size / 2;
+  const cz = z0 + size / 2;
+  const reach = size * Math.SQRT1_2 + SETTLEMENT_MAX_MARGIN + 30;
+  return { world, cities: world.citiesNear(cx, cz, reach), roads: world.roadsNear(cx, cz, reach) };
+}
+
+/** True if something of horizontal radius `margin` at (x, z) would stand on a road, in a city or in water. */
+function blockedBySettlement(site: SettlementContext, x: number, z: number, margin: number, ground: number): boolean {
+  for (const c of site.cities) {
+    const r = c.radius + 20 + margin;
+    const dx = x - c.x;
+    const dz = z - c.z;
+    if (dx * dx + dz * dz < r * r) return true;
+  }
+  for (const r of site.roads) if (distanceToRoad(r, x, z) < r.halfWidth + 4 + margin) return true;
+  return site.world.waterLevelAt(x, z) > ground - 0.3;
+}
+
+function distanceToRoad(r: RoadSegment, x: number, z: number): number {
+  const sx = r.bx - r.ax;
+  const sz = r.bz - r.az;
+  const l2 = sx * sx + sz * sz;
+  let t = l2 > 0 ? ((x - r.ax) * sx + (z - r.az) * sz) / l2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(r.ax + sx * t - x, r.az + sz * t - z);
+}
+
+const CITY_BUILDING_CACHE = 48;
+const cityBuildingCache = new Map<string, CityBuilding[]>();
+function cachedCityBuildings(city: CitySite, seed: number): CityBuilding[] {
+  const key = `${seed}:${city.id}`;
+  let list = cityBuildingCache.get(key);
+  if (!list) {
+    list = cityBuildings(city, seed);
+    if (cityBuildingCache.size >= CITY_BUILDING_CACHE) cityBuildingCache.delete(cityBuildingCache.keys().next().value!);
+    cityBuildingCache.set(key, list);
+  }
+  return list;
+}
+
+/**
+ * The buildings of the cities whose centre lies in the cell, minus those on an intercity road, in
+ * water or in a clear zone. Flat-roofed towers and blocks have roofHeight 0.
+ */
+function cityBuildingsInCell(
+  site: SettlementContext, seed: number, x0: number, z0: number, size: number,
+  zones: readonly Exclusion[], heightAt: (x: number, z: number) => number,
+): BuildingData[] {
+  const out: BuildingData[] = [];
+  for (const city of site.cities) {
+    for (const b of cachedCityBuildings(city, seed)) {
+      if (b.x < x0 || b.x >= x0 + size || b.z < z0 || b.z >= z0 + size) continue;
+      const halfDiag = Math.hypot(b.width, b.depth) / 2;
+      if (excluded(zones, b.x, b.z, halfDiag)) continue;
+      let onRoad = false;
+      for (const r of site.roads) {
+        if (distanceToRoad(r, b.x, b.z) < r.halfWidth + halfDiag + 2) {
+          onRoad = true;
+          break;
+        }
+      }
+      if (onRoad) continue;
+      const c = Math.cos(b.heading);
+      const s = Math.sin(b.heading);
+      let base = Infinity;
+      for (const [lx, lz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+        const wx = (lx * b.width) / 2;
+        const wz = (lz * b.depth) / 2;
+        base = Math.min(base, heightAt(b.x + wx * c + wz * s, b.z - wx * s + wz * c));
+      }
+      const ground = heightAt(b.x, b.z);
+      if (site.world.waterLevelAt(b.x, b.z) > base - 0.3) continue;
+      base -= 0.5;
+      out.push({
+        x: b.x,
+        y: base,
+        z: b.z,
+        width: b.width,
+        depth: b.depth,
+        wallHeight: b.height + (ground - base),
+        roofHeight: b.roofHeight,
+        heading: b.heading,
+        wallColor: b.wallColor,
+        roofColor: b.roofColor,
+      });
+    }
+  }
+  return out;
+}
+
 /** Deterministically generates the trees, rocks and buildings of one square cell. */
 export function generateCell(cellX: number, cellZ: number, cellSize: number, options: PlacementOptions): CellData {
   const rand = mulberry32(hashCell(options.seed, cellX, cellZ));
@@ -545,7 +695,10 @@ export function generateCell(cellX: number, cellZ: number, cellSize: number, opt
   const x0 = cellX * cellSize;
   const z0 = cellZ * cellSize;
   const area = cellSize * cellSize;
-  const centerline = new CenterlineTable(options.valleyCenterX, z0 - CENTERLINE_MARGIN, z0 + cellSize + CENTERLINE_MARGIN);
+  const centerline = options.valleyCenterX
+    ? new CenterlineTable(options.valleyCenterX, z0 - CENTERLINE_MARGIN, z0 + cellSize + CENTERLINE_MARGIN)
+    : NO_CENTERLINE;
+  const site = options.world ? settlementContext(options.world, x0, z0, cellSize) : null;
   const allExclusions = getExclusions(options);
   // Largest margin used below is 40 m (farm), scaled for the rectangle corners.
   const zones = exclusionsNearCell(allExclusions.zones, x0, z0, cellSize, 64);
@@ -587,6 +740,7 @@ export function generateCell(cellX: number, cellZ: number, cellSize: number, opt
     const crownR = height * widthScale * (kind === 'conifer' ? CONIFER_SHAPE.crownRadius : BROADLEAF_SHAPE.crownRadius);
     if (dist < CORRIDOR_HALF_WIDTH + crownR + 4) continue;
     if (excluded(zones, x, z, crownR + 5) || excluded(featureZones, x, z, crownR)) continue;
+    if (site && blockedBySettlement(site, x, z, crownR, ground)) continue;
     const slope = slopeAt(heightAt, x, z);
     if (slope > MAX_TREE_SLOPE) continue;
     prob *= 1 - smoothstep(0.35, MAX_TREE_SLOPE, slope);
@@ -619,6 +773,7 @@ export function generateCell(cellX: number, cellZ: number, cellSize: number, opt
     if (excluded(zones, x, z, radius + 5) || excluded(featureZones, x, z, radius)) continue;
     const ground = heightAt(x, z);
     if (ground > 650) continue;
+    if (site && blockedBySettlement(site, x, z, radius, ground)) continue;
     if (rAccept >= 0.15 && rAccept >= 0.15 + 0.7 * smoothstep(0.25, 0.8, slopeAt(heightAt, x, z))) continue;
     const squash = 0.55 + rSquash * 0.35;
     const y = ground + radius * squash * 0.3;
@@ -638,7 +793,8 @@ export function generateCell(cellX: number, cellZ: number, cellSize: number, opt
       !excluded(featureZones, fx, fz, 40) &&
       centerline.distance(fx, fz) > 320 &&
       heightAt(fx, fz) < 280 &&
-      slopeAt(heightAt, fx, fz) < 0.12
+      slopeAt(heightAt, fx, fz) < 0.12 &&
+      !(site && blockedBySettlement(site, fx, fz, 60, heightAt(fx, fz)))
     ) {
       const count = 1 + Math.floor(farmRandoms[0]! * 3);
       for (let b = 0; b < count; b++) {
@@ -654,6 +810,7 @@ export function generateCell(cellX: number, cellZ: number, cellSize: number, opt
         const x = fx + Math.cos(angle) * off;
         const z = fz + Math.sin(angle) * off;
         if (excluded(zones, x, z, 15) || slopeAt(heightAt, x, z) > 0.2) continue;
+        if (site && blockedBySettlement(site, x, z, 15, heightAt(x, z))) continue;
         const c = Math.cos(heading);
         const s = Math.sin(heading);
         let base = Infinity;
@@ -678,6 +835,13 @@ export function generateCell(cellX: number, cellZ: number, cellSize: number, opt
         });
         maxTop = Math.max(maxTop, base + walls + roofHeight);
       }
+    }
+  }
+
+  if (site) {
+    for (const b of cityBuildingsInCell(site, options.seed, x0, z0, cellSize, zones, heightAt)) {
+      buildings.push(b);
+      maxTop = Math.max(maxTop, b.y + b.wallHeight + b.roofHeight);
     }
   }
 
@@ -801,4 +965,84 @@ export function collideArch(arch: ArchData, x: number, y: number, z: number): bo
   const w = dx * s + dz * c;
   if (Math.abs(w) > arch.halfDepth || u < arch.uLeft || u > arch.uRight) return false;
   return y >= archOpeningTop(arch, u);
+}
+
+export { PIER_HALF };
+
+const spanCache = new WeakMap<BridgeSite, BridgeSpan>();
+/**
+ * The deck pieces and piers of a bridge. The settlement layer's bridges already are spans; any
+ * other BridgeSite becomes a straight flat deck along its heading.
+ */
+export function bridgeSpanOf(site: BridgeSite): BridgeSpan {
+  const s = site as Partial<BridgeSpan>;
+  if (s.pieces && s.piers && s.key !== undefined && s.halfWidth !== undefined) return site as BridgeSpan;
+  let span = spanCache.get(site);
+  if (!span) {
+    const dx = Math.sin(site.heading) * site.halfSpan;
+    const dz = Math.cos(site.heading) * site.halfSpan;
+    const y = site.deckY + DECK_THICKNESS;
+    const piece: RoadPiece = {
+      ax: site.x - dx, az: site.z - dz, bx: site.x + dx, bz: site.z + dz,
+      halfWidth: ROAD_HALF_WIDTH, bridge: true, deckY: site.deckY, ay: y, by: y, roadA: 0, roadB: 0, index: 0,
+    };
+    span = { ...site, key: `site:${site.x}:${site.z}`, halfWidth: ROAD_HALF_WIDTH, pieces: [piece], piers: [] };
+    spanCache.set(site, span);
+  }
+  return span;
+}
+
+/** Road surface height of a deck piece at parameter t (0 at a, 1 at b). */
+function pieceY(p: RoadPiece, t: number): number {
+  return p.ay + (p.by - p.ay) * t;
+}
+
+/** Parameter along the piece of the point closest to (x, z), and the distance to it. */
+function pieceProjection(p: RoadPiece, x: number, z: number, out: [number, number]): void {
+  const sx = p.bx - p.ax;
+  const sz = p.bz - p.az;
+  const l2 = sx * sx + sz * sz;
+  let t = l2 > 0 ? ((x - p.ax) * sx + (z - p.az) * sz) / l2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  out[0] = t;
+  out[1] = Math.hypot(p.ax + sx * t - x, p.az + sz * t - z);
+}
+
+const _proj: [number, number] = [0, 0];
+
+/** True if the point is inside a road bridge's deck (slab plus parapets) or one of its piers. */
+export function collideBridge(site: BridgeSite, x: number, y: number, z: number): boolean {
+  const span = bridgeSpanOf(site);
+  const reach = span.halfSpan + span.halfWidth + 60;
+  if (Math.abs(x - span.x) > reach || Math.abs(z - span.z) > reach) return false;
+  for (const p of span.pieces) {
+    pieceProjection(p, x, z, _proj);
+    if (_proj[1] > p.halfWidth + 1) continue;
+    const ry = pieceY(p, _proj[0]);
+    if (y >= ry - DECK_THICKNESS && y <= ry + PARAPET_HEIGHT) return true;
+  }
+  for (const pier of span.piers) {
+    if (insideBox(x, y, z, pier.x, pier.bottomY, pier.z, PIER_HALF, PIER_HALF, pier.topY - pier.bottomY, span.heading)) return true;
+  }
+  return false;
+}
+
+/**
+ * Vertical extent [bottom, top] of a bridge's deck within `radius` of (x, z) (written to out),
+ * or false if the deck isn't that close. Piers are left to obstacleTop-style queries.
+ */
+export function bridgeDeckBand(site: BridgeSite, x: number, z: number, radius: number, out: [number, number]): boolean {
+  const span = bridgeSpanOf(site);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const p of span.pieces) {
+    pieceProjection(p, x, z, _proj);
+    if (_proj[1] > p.halfWidth + 1 + radius) continue;
+    lo = Math.min(lo, p.ay, p.by);
+    hi = Math.max(hi, p.ay, p.by);
+  }
+  if (lo > hi) return false;
+  out[0] = lo - DECK_THICKNESS;
+  out[1] = hi + PARAPET_HEIGHT;
+  return true;
 }

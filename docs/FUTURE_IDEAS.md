@@ -34,8 +34,19 @@ Everything from the original idea list is now in the game. Notes say how each on
 - ✅ Multiplayer: ghosts + real-time via a LAN WebSocket relay (`npm run server`)
 - ✅ Medals per course (gold / silver / bronze from the course length)
 
+## Worlds, races, combat ✅
+- ✅ Minecraft-style seeded worlds (`src/world/gen/`): valleys, mountains, rivers, lakes/ocean, roads, towns and cities from any seed; the Classic Canyon is still available
+- ✅ Free flight without gates, on any world
+- ✅ Per-seed generated race courses (Easy / Medium / Hard, Sprint / Loop), also in multiplayer lobbies
+- ✅ Dogfight: online mode for 2–4 pilots (duel or free-for-all, zone 6 km + 2 km per extra pilot) with machine gun, heat-seeking missiles, flares and a bounded combat zone (first to 3 kills)
+- ✅ Radar in every flying mode (gates, AI, ghost, players, opponent, missiles, flares, airfield, dogfight zone); replaces the minimap idea
+
 ## Next ideas
 - Internet multiplayer: host the relay online (needs a server with a public address), synchronized race starts
 - Real asset textures / sounds and a detailed .glb jet
-- Name tags above other pilots, minimap
+- Name tags above other pilots
 - Replays from any camera
+- Dogfight AI bot (offline dogfight practice) and 2v2 team dogfights
+- Power lines and traffic along the generated roads; airports in the bigger cities
+- Seed browser: favourite seeds, best times per generated course on the leaderboard
+- Terrain shading per biome (river banks use the sea level for wet-bank shading only)

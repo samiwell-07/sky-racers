@@ -63,14 +63,14 @@ export class Jet {
 
   constructor(readonly definition: JetDefinition, config: FlightConfig, loadGltf = true) {
     this.flight = new FlightModel(config);
-    this.parts = buildJetModel(definition.paint);
+    this.parts = buildJetModel(definition.paint, definition.id);
     this.parts.root.traverse((o) => {
       const g = (o as Mesh).geometry;
       if (g && !this.geometries.includes(g)) this.geometries.push(g);
     });
     this.afterburner = new Afterburner(this.parts.nozzles);
     this.heatHaze = new HeatHaze(this.parts.nozzles);
-    this.lights = new NavLights();
+    this.lights = new NavLights(this.parts.navigationLights);
     this.object.add(this.parts.root, this.afterburner.group, this.heatHaze.object, this.lights.group);
     if (loadGltf) {
       void tryLoadGltfJet(definition.id, this.parts.root, this.object, this.gltfAbort.signal).then((model) => {
