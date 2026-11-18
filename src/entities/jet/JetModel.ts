@@ -1,77 +1,22 @@
 import {
   BoxGeometry,
-  CanvasTexture,
   CylinderGeometry,
   ConeGeometry,
   Group,
   Mesh,
   MeshStandardMaterial,
-  RepeatWrapping,
-  SRGBColorSpace,
+  PlaneGeometry,
   SphereGeometry,
   type BufferGeometry,
   type Material,
   type Object3D,
   type Texture,
 } from 'three';
-import { mulberry32 } from '../../utils/random';
+import { FACTORY_APPEARANCE, type JetAppearance } from './jetAppearance';
+import { numberTexture, wrapTexture } from './jetLivery';
 import { JET_CATALOG, type JetPaint } from './jetCatalog';
 import { getJetDesign, type Outline } from './jetDesigns';
 import { closedBody, fixedWing, flatPanel, mirrored, wingEdge, type WingControl } from './modelGeometry';
-
-/** Two-tone military camouflage drawn on a canvas. */
-function createCamoTexture(paint: JetPaint): CanvasTexture | null {
-  if (typeof document === 'undefined') return null; // headless (tests)
-  const size = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  const random = mulberry32(7);
-  ctx.fillStyle = paint.base;
-  ctx.fillRect(0, 0, size, size);
-  const blotch = (color: string, count: number, minR: number, maxR: number): void => {
-    ctx.fillStyle = color;
-    for (let b = 0; b < count; b++) {
-      const cx = random() * size;
-      const cy = random() * size;
-      const r = minR + random() * (maxR - minR);
-      ctx.beginPath();
-      for (let a = 0; a <= 12; a++) {
-        const ang = (a / 12) * Math.PI * 2;
-        const rr = r * (0.6 + random() * 0.6);
-        // Draw each blotch 9 times (wrapped) so the texture tiles seamlessly.
-        const px = cx + Math.cos(ang) * rr * 1.6;
-        const py = cy + Math.sin(ang) * rr;
-        if (a === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      for (const ox of [-size, 0, size]) {
-        for (const oy of [-size, 0, size]) {
-          ctx.save();
-          ctx.translate(ox, oy);
-          ctx.fill();
-          ctx.restore();
-        }
-      }
-    }
-  };
-  blotch(paint.dark, 14, 30, 70);
-  blotch(paint.light, 8, 20, 45);
-  // Panel lines.
-  ctx.strokeStyle = 'rgba(40,45,50,0.35)';
-  ctx.lineWidth = 1.5;
-  for (let i = 0; i < 8; i++) {
-    const p = (i / 8) * size;
-    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, size); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(size, p); ctx.stroke();
-  }
-  const tex = new CanvasTexture(canvas);
-  tex.wrapS = tex.wrapT = RepeatWrapping;
-  tex.colorSpace = SRGBColorSpace;
-  return tex;
-}
 
 export interface JetParts {
   root: Group;
@@ -104,18 +49,21 @@ export const GEAR_HEIGHT = 2.25;
  * Builds an ID-specific airframe from closed solids with embedded roots and backed recesses.
  * Local frame: nose toward -Z, up = +Y, right wing = +X. Length ~20 m, span ~13 m.
  */
-export function buildJetModel(paint: JetPaint = JET_CATALOG[0]!.paint, modelId = 'falcon'): JetParts {
+export function buildJetModel(paint: JetPaint = JET_CATALOG[0]!.paint, modelId = 'falcon', appearance: JetAppearance = FACTORY_APPEARANCE): JetParts {
   const design = getJetDesign(modelId);
-  const camo = createCamoTexture(paint);
-  const bodyMat = new MeshStandardMaterial({ color: camo ? '#ffffff' : paint.base, map: camo, metalness: 0.35, roughness: 0.55 });
-  const wingCamo = camo?.clone() ?? null;
-  wingCamo?.repeat.set(0.15, 0.15);
-  const wingMat = new MeshStandardMaterial({ color: wingCamo ? '#ffffff' : paint.base, map: wingCamo, metalness: 0.35, roughness: 0.6 });
+  const camo = wrapTexture(paint, appearance.wrap);
+  const roughness = appearance.finish === 'gloss' ? 0.18 : 0.76;
+  const bodyMat = new MeshStandardMaterial({ map: camo, metalness: 0.35, roughness });
+  const wingCamo = camo.clone();
+  wingCamo.repeat.set(0.15, 0.15);
+  const wingMat = new MeshStandardMaterial({ map: wingCamo, metalness: 0.35, roughness });
+  const textures: Texture[] = [camo, wingCamo];
   const darkMat = new MeshStandardMaterial({ color: '#2b2f33', metalness: 0.5, roughness: 0.5 });
   const radomeMat = new MeshStandardMaterial({ color: '#4a5056', metalness: 0.2, roughness: 0.7 });
   const nozzleMat = new MeshStandardMaterial({ color: '#494744', metalness: 0.85, roughness: 0.4 });
   const recessMat = new MeshStandardMaterial({ color: '#10151a', metalness: 0.2, roughness: 0.88 });
-  const glassMat = new MeshStandardMaterial({ color: '#4a3c1c', metalness: 0.95, roughness: 0.08, transparent: true, opacity: 0.88 });
+  const glassColor = { factory: '#4a3c1c', smoke: '#414958', amber: '#df952f', blue: '#4189c0' }[appearance.canopy];
+  const glassMat = new MeshStandardMaterial({ color: glassColor, metalness: 0.4, roughness: 0.08, transparent: true, opacity: 0.8 });
   const missileMat = new MeshStandardMaterial({ color: '#d9dcdc', metalness: 0.2, roughness: 0.5 });
   const markMat = new MeshStandardMaterial({ color: paint.marking, roughness: 0.8 });
   const materials: Material[] = [bodyMat, wingMat, darkMat, radomeMat, nozzleMat, recessMat, glassMat, missileMat, markMat];
@@ -230,6 +178,26 @@ export function buildJetModel(paint: JetPaint = JET_CATALOG[0]!.paint, modelId =
     const back = wingEdge(verticalOutline, markingHeight, true);
     const stripe = add(`fin-marking-${i}`, new BoxGeometry(0.15, 0.18, (back - front) * 0.65), markMat, fin);
     stripe.position.set(0, markingHeight, (front + back) / 2);
+
+    if (i === 0 && appearance.raceNumber) {
+      const map = numberTexture(appearance.raceNumber);
+      const placard = new MeshStandardMaterial({ map, roughness });
+      textures.push(map);
+      materials.push(placard);
+      const y = top * 0.54, maxHeight = top * 0.26;
+      const heights = [y - maxHeight / 2, y + maxHeight / 2,
+        ...verticalOutline.map(([h]) => h).filter(h => Math.abs(h - y) < maxHeight / 2)];
+      const near = Math.max(...heights.map(h => wingEdge(verticalOutline, h, false)));
+      const far = Math.min(...heights.map(h => wingEdge(verticalOutline, h, true)));
+      const aspect = map.image.width / map.image.height;
+      const height = Math.min(maxHeight, (far - near) * 0.9 / aspect);
+      for (const side of [-1, 1]) {
+        const face = add(`race-number-${side < 0 ? 'left' : 'right'}`, new PlaneGeometry(height * aspect, height), placard, fin);
+        face.rotation.y = side * Math.PI / 2;
+        face.position.set(side * 0.072, y, (near + far) / 2);
+        face.castShadow = false;
+      }
+    }
   });
 
   if (design.canards) {
@@ -369,6 +337,6 @@ export function buildJetModel(paint: JetPaint = JET_CATALOG[0]!.paint, modelId =
     navigationLights,
     canopy,
     materials: [...materials, gearMat, tireMat],
-    textures: [camo, wingCamo].filter((t): t is CanvasTexture => t !== null),
+    textures,
   };
 }

@@ -54,6 +54,7 @@ export class RadarContactList {
     c.z = z;
     c.heading = heading;
     c.label = label;
+    c.color = undefined;
     this.list.push(c);
     return c;
   }

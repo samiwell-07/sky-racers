@@ -16,6 +16,16 @@ function lockLabel(missiles: number, lock: number): { text: string; cls: string 
 
 const RESULT_TITLES = { victory: 'VICTORY', defeat: 'DEFEAT', opponentLeft: 'VICTORY' } as const;
 
+function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string>): SVGElementTagNameMap[K] {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+/** Gun crosshair half-size in NDC units along x (y is scaled by the aspect ratio). */
+const GUN_SIZE = 0.025;
+const GUN_GAP = 0.008;
+
 /**
  * Combat HUD of the dogfight: score (top right), weapons panel (right, above the radar), missile
  * warning, start countdown, out-of-zone and respawn countdowns (centre) and the results panel.
@@ -47,6 +57,9 @@ export class DogfightHud implements DogfightHudView {
   private readonly resultsNote: HTMLDivElement;
   private readonly backButton: HTMLButtonElement;
   private readonly cache = new Map<string, string>();
+  private readonly reticleSvg: SVGSVGElement;
+  private readonly lockBox: SVGPolygonElement;
+  private readonly gunCross: SVGPathElement;
   private resultsShown = false;
 
   constructor(private readonly options: DogfightHudOptions) {
@@ -98,6 +111,11 @@ export class DogfightHud implements DogfightHudView {
     );
 
     this.root = h('div', { class: 'hud df-hud' }, score, this.weaponsPanel, this.center, this.results);
+    this.reticleSvg = svg('svg', { class: 'df-reticle', viewBox: '-1 -1 2 2', preserveAspectRatio: 'none' });
+    this.lockBox = svg('polygon', { class: 'df-lockbox idle' });
+    this.gunCross = svg('path', { class: 'df-gun' });
+    this.reticleSvg.append(this.lockBox, this.gunCross);
+    this.root.prepend(this.reticleSvg);
   }
 
   mount(container: HTMLElement): void {
@@ -140,8 +158,41 @@ export class DogfightHud implements DogfightHudView {
     this.missileWarn.classList.toggle('visible', incoming);
     this.root.classList.toggle('incoming', incoming);
 
+    this.updateReticle(s);
     this.updateCenter(s);
     this.updateResults(s);
+  }
+
+  private updateReticle(s: DogfightHudState): void {
+    const r = s.reticle ?? null;
+    this.reticleSvg.style.display = r ? '' : 'none';
+    if (!r) return;
+    // NDC y is up; SVG y is down.
+    if (r.box) {
+      this.lockBox.setAttribute('points', r.box.map(([x, y]) => `${x.toFixed(4)},${(-y).toFixed(4)}`).join(' '));
+      this.lockBox.style.display = '';
+    } else this.lockBox.style.display = 'none';
+    const boxCls = `df-lockbox ${r.boxState}`;
+    if (this.cache.get('boxCls') !== boxCls) {
+      this.cache.set('boxCls', boxCls);
+      this.lockBox.setAttribute('class', boxCls);
+    }
+    if (r.gun) {
+      const [x, y0] = r.gun;
+      const y = -y0;
+      const rect = this.reticleSvg.getBoundingClientRect();
+      const k = rect.height > 0 ? rect.width / rect.height : 1;
+      const a = GUN_SIZE;
+      const g = GUN_GAP;
+      const ay = a * k;
+      const gy = g * k;
+      this.gunCross.setAttribute(
+        'd',
+        `M${x - a},${y}H${x - g}M${x + g},${y}H${x + a}M${x},${y - ay}V${y - gy}M${x},${y + gy}V${y + ay}`,
+      );
+      this.gunCross.style.display = '';
+    } else this.gunCross.style.display = 'none';
+    this.gunCross.classList.toggle('hit', r.gunHit);
   }
 
   /** Free-for-all scoreboard: one line per pilot, best first (rebuilt only when it changes). */

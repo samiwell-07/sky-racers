@@ -265,6 +265,16 @@ export class WeaponSystem {
 
   // ------------------------------------------------------------ gun
 
+  /** Pickup gate reward: adds missiles, capped at the full count. */
+  addMissiles(n: number): void {
+    this.missilesLeft = Math.min(WEAPON_RULES.missile.count, this.missilesLeft + n);
+  }
+
+  /** Pickup gate reward: adds flares, capped at the full count. */
+  addFlares(n: number): void {
+    this.flaresLeft = Math.min(WEAPON_RULES.flare.count, this.flaresLeft + n);
+  }
+
   private fireGun(dt: number, self: Combatant, trigger: boolean): void {
     const ages = this.gun.update(dt, trigger);
     this.muzzleFlashAge += dt;

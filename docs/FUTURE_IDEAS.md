@@ -1,5 +1,8 @@
 # Ideas – status
 
+For the six selected features planned next, see [GAME_BACKLOG.md](GAME_BACKLOG.md).
+This page is the historical idea/status list; some "Next ideas" need rechecking against the current game.
+
 Everything from the original idea list is now in the game. Notes say how each one was done and its limits.
 
 ## Racing ✅

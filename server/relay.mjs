@@ -20,8 +20,30 @@ const MODES = new Set(['free', 'race', 'dogfight']);
 const DIFFICULTIES = new Set(['easy', 'medium', 'hard']);
 const LAYOUTS = new Set(['sprint', 'loop']);
 const VIEWS = new Set(['any', 'chase', 'cockpit']);
-/** Jet ids look like 'falcon' (the client falls back to the pilot's own jet for unknown ids). */
-const isJetIdOrAny = (s) => s === '' || (typeof s === 'string' && /^[\w-]{1,32}$/.test(s));
+/** Mirrors LOBBY_TEAMS (src/net/lobbyTypes.ts). */
+export const TEAMS = ['alpha', 'beta', 'gamma', 'delta'];
+
+/** Team for a newcomer: the one with the fewest members (first in order on a tie). */
+export function autoTeam(members) {
+  const counts = new Map(TEAMS.map((t) => [t, 0]));
+  for (const p of members) if (counts.has(p.team)) counts.set(p.team, counts.get(p.team) + 1);
+  return TEAMS.reduce((best, t) => (counts.get(t) < counts.get(best) ? t : best), TEAMS[0]);
+}
+const JET_IDS = ['falcon', 'viper', 'raptor', 'kestrel', 'specter'];
+const isJetIdOrAny = (s) => s === '' || JET_IDS.includes(s);
+
+/** Only keep the small, known per-plane profiles; old clients have none (factory). */
+function sanitizeAppearances(input) {
+  const looks = new Map();
+  for (const id of JET_IDS) {
+    const a = input?.[id];
+    if (!a || !['factory', 'tactical', 'woodland', 'splinter'].includes(a.wrap)
+      || !['matte', 'gloss'].includes(a.finish) || !['factory', 'smoke', 'amber', 'blue'].includes(a.canopy)
+      || typeof a.raceNumber !== 'string' || a.raceNumber.length > 2 || /[^0-9]/.test(a.raceNumber)) continue;
+    looks.set(id, { wrap: a.wrap, finish: a.finish, raceNumber: a.raceNumber, canopy: a.canopy });
+  }
+  return looks;
+}
 const DEATH_CAUSES = new Set(['gun', 'missile', 'zone', 'crash']);
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 /** Mirrors DOGFIGHT_RULES.killsToWin / minPlayers / maxPlayers (src/combat/types.ts). */
@@ -163,7 +185,10 @@ export function startRelay({ port = Number(process.env.PORT ?? 8787), host = pro
     startedAt: lobby.startedAt,
     settings: lobby.settings,
     // A jet forced by the host is what everyone flies, so it's what everyone sees.
-    players: [...lobby.members.values()].map((p) => ({ id: p.id, name: p.name, jetId: lobby.settings.forceJet || p.jetId, ready: p.ready, inGame: p.inGame })),
+    players: [...lobby.members.values()].map((p) => {
+      const jetId = lobby.settings.forceJet || p.jetId;
+      return { id: p.id, name: p.name, jetId, appearance: p.appearances.get(jetId), team: p.team, ready: p.ready, inGame: p.inGame };
+    }),
   });
 
   /** Joining a game in progress: allowed by the host (dogfight and race late joiners wait in the lobby for the next one). */
@@ -278,6 +303,7 @@ export function startRelay({ port = Number(process.env.PORT ?? 8787), host = pro
     if (lobby.members.size >= lobby.settings.maxPlayers) return send(player, { type: 'error', message: 'This lobby is full.' });
     if (lobby.state === 'playing' && !canJoinPlaying(lobby)) return send(player, { type: 'error', message: 'This lobby is already playing.' });
     leaveLobby(player);
+    player.team = autoTeam(lobby.members.values());
     lobby.members.set(player.id, player);
     player.lobby = lobby;
     player.ready = false;
@@ -291,7 +317,7 @@ export function startRelay({ port = Number(process.env.PORT ?? 8787), host = pro
   const wss = new WebSocketServer({ port, host, maxPayload: MAX_MESSAGE_BYTES });
 
   wss.on('connection', (ws) => {
-    const player = { ws, id: String(nextId++), name: 'Pilot', jetId: 'falcon', ready: false, inGame: false, alive: true, hello: false, lobby: null };
+    const player = { ws, id: String(nextId++), name: 'Pilot', jetId: 'falcon', team: TEAMS[0], ready: false, inGame: false, alive: true, hello: false, lobby: null };
     players.set(player.id, player);
     let windowStart = Date.now();
     let rawCount = 0;
@@ -319,7 +345,8 @@ export function startRelay({ port = Number(process.env.PORT ?? 8787), host = pro
 
       if (msg.type === 'hello') {
         player.name = cleanStr(msg.name, `Pilot ${player.id}`);
-        player.jetId = cleanStr(msg.jetId, player.jetId);
+        if (JET_IDS.includes(msg.jetId)) player.jetId = msg.jetId;
+        player.appearances = sanitizeAppearances(msg.appearances);
         if (!player.hello) send(player, { type: 'welcome', id: player.id });
         player.hello = true;
         if (player.lobby) broadcastLobby(player.lobby);
@@ -372,6 +399,13 @@ export function startRelay({ port = Number(process.env.PORT ?? 8787), host = pro
           player.ready = !!msg.ready;
           broadcastLobby(lobby);
           return;
+        case 'setTeam': {
+          const target = lobby.members.get(String(msg.id));
+          if (!isHost || lobby.settings.mode !== 'dogfight' || !target || !TEAMS.includes(msg.team) || target.team === msg.team) return;
+          target.team = msg.team;
+          broadcastLobby(lobby);
+          return;
+        }
         case 'kick': {
           const target = lobby.members.get(String(msg.id));
           if (!isHost || !target || target === player) return;

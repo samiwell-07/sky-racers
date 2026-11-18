@@ -15,6 +15,10 @@ export class RemotePlayers {
         this.add(p);
         onMessage(`${p.name} joined`);
       }),
+      net.modelChanged.on((p) => {
+        this.remove(p.id);
+        this.add(p);
+      }),
       net.onLeave((id) => {
         const name = net.players.get(id)?.name ?? 'A pilot';
         this.remove(id);
@@ -30,7 +34,7 @@ export class RemotePlayers {
   }
 
   private add(p: RemotePlayerInfo): void {
-    if (!this.jets.has(p.id)) this.jets.set(p.id, new PuppetJet(getJetDefinition(p.jetId), this.parent));
+    if (!this.jets.has(p.id)) this.jets.set(p.id, new PuppetJet(getJetDefinition(p.jetId), this.parent, 1, p.appearance));
   }
 
   private remove(id: string): void {

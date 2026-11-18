@@ -32,7 +32,9 @@ export const WEAPON_RULES = Object.freeze({
     count: 4,
     /** Seeker field of view half-angle (rad) for lock and tracking. */
     seekerHalfAngle: (28 * Math.PI) / 180,
-    /** Seconds the target must stay in the seeker cone before the missile locks. */
+    /** Half-size (rad) of the square lock box around the nose: the target must stay inside it while locking. */
+    lockBoxHalfAngle: (10 * Math.PI) / 180,
+    /** Seconds the target must stay in the lock box before the missile locks. */
     lockTime: 1.2,
     lockRange: 4500,
     minRange: 250,

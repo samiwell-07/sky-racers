@@ -5,6 +5,7 @@ import { NO_WEAPON_INPUT } from '../src/combat';
 import { DogfightSession, type DogfightHooks, type DogfightJet, type DogfightSpawn } from '../src/modes/DogfightSession';
 import { DogfightCore } from '../src/modes/dogfight/DogfightCore';
 import { ZoneWall } from '../src/modes/dogfight/ZoneWall';
+import { PICKUP_REWARDS, PICKUP_RULES, PickupField } from '../src/modes/dogfight/pickups';
 import { checkZone, chooseDogfightZone, dogfightSlot, dogfightSpawn, dogfightZoneRadius, type ZoneWorld } from '../src/modes/dogfight/zone';
 
 /** Rugged terrain everywhere; the sea covers everything west of x = 6000. */
@@ -363,5 +364,44 @@ describe('DogfightSession', () => {
     expect(session.isOpponentAlive('C')).toBe(false);
     expect(session.isOpponentAlive('B')).toBe(true);
     expect(session.hudState().feed).toMatch(/B.*C/);
+  });
+});
+
+describe('pickup gates', () => {
+  const zone = { cx: 0, cz: 0, radius: 6000, ceiling: 4000 };
+  const ground = (): number => 100;
+
+  it('keeps at most 2 gates inside the zone, takes one when flown through and replaces it after the delay', () => {
+    const field = new PickupField(zone, ground, 42);
+    expect(field.gates).toHaveLength(PICKUP_RULES.maxGates);
+    for (const g of field.gates) {
+      expect(Math.hypot(g.position.x, g.position.z)).toBeLessThanOrEqual(zone.radius * PICKUP_RULES.zoneFraction + 1e-6);
+      expect(g.position.y).toBeGreaterThanOrEqual(100 + PICKUP_RULES.minAgl);
+    }
+    const amounts = { health: new Set<number>(), missile: new Set<number>(), flare: new Set<number>() };
+    const many = new PickupField(zone, ground, 7);
+    for (let i = 0; i < 200; i++) {
+      const g = many.gates[0]!;
+      const rw = PICKUP_REWARDS[g.kind];
+      expect(g.amount).toBeGreaterThanOrEqual(rw.min);
+      expect(g.amount).toBeLessThanOrEqual(rw.max);
+      amounts[g.kind].add(g.amount);
+      many.update(0.1, g.position.clone().add(new Vector3(0, 0, 50)), true);
+      many.update(0.1, g.position.clone().add(new Vector3(0, 0, -50)), true);
+      many.update(PICKUP_RULES.respawnDelay, g.position, false);
+    }
+    expect([...amounts.missile].sort()).toEqual([1, 2, 3]);
+    expect(amounts.flare.size).toBeGreaterThan(1);
+    expect(amounts.health.size).toBeGreaterThan(1);
+    const g = field.gates[0]!;
+    const p = g.position.clone().add(new Vector3(0, 0, 100));
+    expect(field.update(0.1, p, true)).toEqual([]);
+    p.z -= 200; // straight through the ring
+    expect(field.update(0.1, p, true).map((x) => x.id)).toEqual([g.id]);
+    expect(field.gates).toHaveLength(1);
+    expect(field.update(0.1, p, true)).toEqual([]);
+    field.update(PICKUP_RULES.respawnDelay, p, true);
+    expect(field.gates).toHaveLength(2);
+    expect(field.gates.some((x) => x.id === g.id)).toBe(false);
   });
 });

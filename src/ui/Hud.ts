@@ -1,5 +1,6 @@
 import { ACTION_LABELS, type InputAction } from '../config/controlsConfig';
 import { keyLabel, type KeyBindings } from '../input/KeyBindings';
+import type { PadBindings } from '../input/PadBindings';
 import type { GameSettings } from '../settings/Settings';
 import { GateNavigator } from './GateNavigator';
 import type { Quaternion } from 'three';
@@ -65,7 +66,11 @@ export class Hud {
   private radar: HTMLElement | null = null;
   private inCockpit = false;
 
-  constructor(container: HTMLElement, private readonly bindings: KeyBindings) {
+  constructor(
+    container: HTMLElement,
+    private readonly bindings: KeyBindings,
+    private readonly padBindings: PadBindings,
+  ) {
     this.root = document.createElement('div');
     this.root.className = 'hud';
     this.root.innerHTML = `
@@ -99,7 +104,7 @@ export class Hud {
       </div>
       <div data-el="center" class="hud-center"></div>
       <div data-el="message" class="hud-message"></div>
-      <div class="hud-bottom-right"><span data-el="camera">CHASE</span> · <kbd>H</kbd> help</div>
+      <div class="hud-bottom-right"><span data-el="camera">CHASE</span> · <kbd>H</kbd><span data-el="padHelp"></span> help</div>
       <div data-el="help" class="hud-help hidden">
         <h2>Controls</h2>
         <p>No rudder: bank and pull to turn. Fly low through the gates.</p>
@@ -112,6 +117,12 @@ export class Hud {
     container.appendChild(this.root);
     window.addEventListener('resize', () => this.applyScale());
     this.applyScale();
+    const showPadHelp = (): void => {
+      const hint = padBindings.hint('toggleHelp');
+      this.el.padHelp!.innerHTML = hint ? ` / <kbd>${hint}</kbd>` : '';
+    };
+    padBindings.onChange(showPadHelp);
+    showPadHelp();
   }
 
   /** Instrument set and HUD scale (0.75 - 1.5); the scale shrinks automatically when the window is too small. */
@@ -137,11 +148,15 @@ export class Hud {
     return !this.el.help!.classList.contains('hidden');
   }
 
-  setHelpVisible(visible: boolean): void {
+  /** With `showPad`, a second column lists the controller buttons. */
+  setHelpVisible(visible: boolean, showPad = false): void {
     if (visible) {
-      this.el.helpTable!.innerHTML = HELP_ACTIONS.map(
-        (a) => `<tr><td>${this.bindings.get(a).map((c) => `<kbd>${keyLabel(c)}</kbd>`).join(' ')}</td><td>${ACTION_LABELS[a]}${DOGFIGHT_ONLY.has(a) ? ' <small>(dogfight)</small>' : ''}</td></tr>`,
-      ).join('');
+      this.el.helpTable!.innerHTML = HELP_ACTIONS.map((a) => {
+        const keys = this.bindings.get(a).map((c) => `<kbd>${keyLabel(c)}</kbd>`).join(' ');
+        const hint = this.padBindings.hint(a);
+        const pad = showPad ? `<td>${hint ? `<kbd>${hint}</kbd>` : ''}</td>` : '';
+        return `<tr><td>${keys}</td>${pad}<td>${ACTION_LABELS[a]}${DOGFIGHT_ONLY.has(a) ? ' <small>(dogfight)</small>' : ''}</td></tr>`;
+      }).join('');
     }
     this.el.help!.classList.toggle('hidden', !visible);
   }

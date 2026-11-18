@@ -21,12 +21,16 @@ For an explicit LAN session, run `npm run dev -- --host 0.0.0.0`: both listeners
 Friends open `http://<your-ip>:5173` and connect to `ws://<your-ip>:8787`. For the standalone relay, PowerShell
 `$env:HOST='0.0.0.0'; npm run server` enables LAN access (`HOST` otherwise defaults to `localhost`; `PORT` defaults to 8787).
 
+Other pilots, including late joiners, see your saved wrap, finish, canopy and race number for the
+aircraft you actually fly. If the host forces a plane, each pilot keeps their own look for that plane.
+These cosmetics travel in lobby profiles, not movement packets; missing or invalid looks use factory paint.
+
 ## Game modes
 - **Free flight** – pick a world (a seed or the Classic Canyon), take off from the runway (or start in the air) and explore. No gates, just flying.
 - **Race** – on a seeded world: a generated course for that seed (Easy / Medium / Hard, Sprint or Loop). On the Classic Canyon: Canyon Sprint (point to point) or Canyon Loop (laps). Against up to 5 AI pilots and your best-run ghost. Countdown, laps, missed-gate penalty (+3 s), split times vs your best, medals, local leaderboard.
 - **Practice** (unranked) – opens a choice between **Flight school** and **Gate sections**. Gate sections: pick a course and a run of consecutive gates (loops may wrap past the start/finish), spawn on the approach to the first gate and fly it as often as you like: R (or pause → Retry section) returns to the section start; a crash puts you back on the approach to the next gate of the section and voids that run's section time. Optional section timer (first to last gate, +3 s per missed gate) with a session best. Real handling, collisions and damage; never writes the leaderboard or ghosts.
   - **Flight school** (Practice > Flight school) – six short lessons (throttle & takeoff, landing gear, bank and pull, gate approach, airbrake, stall recovery) with one objective each and prompts showing your actual key bindings (and controller buttons when one is connected). Calm wind, no turbulence, daylight; R restarts a lesson, the pause menu leaves it. Completed lessons are saved when browser storage works and never count as race records.
-- **Multiplayer** – lobbies: browse public lobbies, join private ones with a 5-letter invite code, or create your own (name, public/private, max players 2–8, mode Race, Free flight or Dogfight (2–4 pilots), joining during a game, the world – a seed or the Classic Canyon – and the weather: time of day, clouds, wind, turbulence; all the same for everyone in the lobby). Creating a lobby or saving its settings remembers the server-confirmed choices in this browser for your next lobby, including after a reload; Cancel and joining someone else's lobby do not overwrite them. Solo settings stay separate. Races on a seeded world use the course generated for that seed and difficulty; Classic Canyon races use the built-in courses and laps. Players mark themselves ready, the host starts, races start together on a grid with everyone in the standings, then everybody returns to the lobby. The server starts with `npm run dev`; friends on the same network open `http://<your-ip>:5173` (start with `npx vite --host`) and the game connects to `ws://<your-ip>:8787` automatically.
+- **Multiplayer** – lobbies: browse public lobbies, join private ones with a 5-letter invite code, or create your own (name, public/private, max players 2–8, mode Race, Free flight or Dogfight (2–4 pilots), joining during a game, the world – a seed or the Classic Canyon – and the weather: time of day, clouds, wind, turbulence; all the same for everyone in the lobby). Creating a lobby or saving its settings remembers the server-confirmed choices in this browser for your next lobby, including after a reload; Cancel and joining someone else's lobby do not overwrite them. Solo settings stay separate. In a dogfight lobby every pilot is on one of 4 teams (Alpha, Beta, Gamma, Delta; newcomers join the smallest team); the host clicks a pilot's team to move them to another one. Races on a seeded world use the course generated for that seed and difficulty; Classic Canyon races use the built-in courses and laps. Players mark themselves ready, the host starts, races start together on a grid with everyone in the standings, then everybody returns to the lobby. The server starts with `npm run dev`; friends on the same network open `http://<your-ip>:5173` (start with `npx vite --host`) and the game connects to `ws://<your-ip>:8787` automatically.
 
 ## Controls (no yaw – bank and pull to turn)
 Default keys (all rebindable in Settings > Controls). Gamepad / HOTAS and mouse flight are supported.
@@ -50,7 +54,9 @@ Default keys (all rebindable in Settings > Controls). Gamepad / HOTAS and mouse 
 | E | Flares (dogfight only) |
 
 Gamepad: left stick = pitch/roll, RT/LT = throttle, A = airbrake, B = gear, Y = camera, Start = pause, Back = respawn,
-RB = gun, LB = missile, X = flares, d-pad down = radar range.
+RB = gun, LB = missile, X = flares, d-pad ↑ = lights, d-pad ↓ = radar range, d-pad ← = help (lists controller buttons).
+Menus: d-pad / left stick = move, A = confirm, B = back.
+Controller buttons can be remapped in Settings > Controls > Controller (the left stick and menu buttons are fixed).
 
 ## Worlds, generated races, Dogfight and radar
 - **Seeded worlds** (Minecraft style): any text or number is a seed, and the same seed always builds the same endless
@@ -80,7 +86,27 @@ Five unique procedural aircraft models with sealed bodies and solid wings, tails
 All five have distinct silhouettes and handling profiles; the original Falcon, Viper and Raptor tuning is unchanged.
 To use your own 3D model, drop `public/assets/models/<jetId>.glb` (or `jet.glb`) – it replaces the procedural jet
 (nose along +Z, it is scaled to ~20 m).
-Pick your jet in the **Hangar** (main menu): rotating 3D preview, role and relative handling.
+Pick your jet with **Choose jet**: a full-screen 3D tour of three connected hangars, with two parking
+bays per building (the last bay is empty). The camera enters the hangar, then glides between parked
+aircraft. The highlighted bay's aircraft name, description and relative handling remain visible.
+Use **Left / Right** or the on-screen Previous / Next buttons to browse; **Enter / Space** on the
+aircraft view or **Confirm aircraft** saves the choice and returns. **Escape / Back** cancels without
+changing your aircraft. Tab reaches each control; Enter / Space activates the focused control.
+Controller: d-pad / left stick to browse, **A** to confirm the focused control, **B** to cancel.
+Navigation stops at the end bays. Reduced-motion preferences skip camera animation.
+
+In a personal hangar, **Customize** previews a wrap, finish, canopy tint and optional one- or
+two-digit race number on the current jet. **Apply** saves that jet’s appearance without selecting it
+for flight. **Cancel** discards the draft; **Reset to factory** previews the default until you apply.
+Parked jets display their saved looks. Optional GLB replacements appear only with factory appearance.
+The host’s aircraft-rule picker does not edit personal appearances.
+
+The same hangar opens from personal jet selection in the multiplayer browser/room and from the host's
+**Plane** rule in lobby creation/settings. Personal confirmation updates your profile; host confirmation
+only edits the form draft until **Create / Save** is pressed. **Pilot's choice** keeps individual aircraft
+selection enabled. Host-enforced aircraft cannot be overridden by individual pilots. Player/chat updates
+do not close a tour; changed host rules or lobby ownership invalidate it with an explanation.
+If 3D rendering is unavailable, the aircraft information and selection controls still work.
 
 ## Settings highlights
 - **HOTAS throttle lever** (Settings > Controls): choose the lever axis, invert it and calibrate min/max with a live readout.
@@ -123,6 +149,11 @@ server/relay.mjs       multiplayer WebSocket relay
 tests/                 Vitest unit tests
 docs/FUTURE_IDEAS.md   idea list and what was built
 ```
+
+## Improvement backlog
+
+See [the selected feature backlog](docs/GAME_BACKLOG.md) for daily challenges, exploration missions,
+weather trials, new landmarks, dynamic weather, and selectable units.
 
 ## Contributing
 `main` is protected: every change goes through a pull request.

@@ -1,5 +1,6 @@
 /** Shared lobby protocol types (mirrors server/relay.mjs). */
 import { JET_CATALOG } from '../entities/jet/jetCatalog';
+import type { JetAppearance } from '../entities/jet/jetAppearance';
 import { generatedCourseId, type CourseRequest, type RaceDifficulty, type RaceLayout } from '../race/generatedCourse';
 import { randomSeedText, seedFromText } from '../utils/seed';
 import { CLASSIC_WORLD, parseWorldKey, worldKey, type WorldSpec } from '../world/gen/WorldGenerator';
@@ -125,10 +126,27 @@ export function lobbyRaceCourse(s: LobbySettings): LobbyRaceCourse {
   return { kind: 'generated', courseId: generatedCourseId(request), request, laps: s.raceLayout === 'loop' ? s.laps : 1 };
 }
 
+export type LobbyTeam = 'alpha' | 'beta' | 'gamma' | 'delta';
+
+/** The 4 lobby teams, in order (mirrors TEAMS in server/relay.mjs). */
+export const LOBBY_TEAMS: ReadonlyArray<{ id: LobbyTeam; name: string; color: string }> = [
+  { id: 'alpha', name: 'Alpha', color: '#ff6b6b' },
+  { id: 'beta', name: 'Beta', color: '#4da3ff' },
+  { id: 'gamma', name: 'Gamma', color: '#59e68a' },
+  { id: 'delta', name: 'Delta', color: '#ffc21a' },
+];
+
+/** Team info for a player (Alpha when an older server sent none). */
+export const lobbyTeam = (team: string | undefined): (typeof LOBBY_TEAMS)[number] =>
+  LOBBY_TEAMS.find((t) => t.id === team) ?? LOBBY_TEAMS[0]!;
+
 export interface LobbyPlayer {
   id: string;
   name: string;
   jetId: string;
+  appearance?: JetAppearance;
+  /** Optional: older servers don't send teams. */
+  team?: LobbyTeam;
   ready: boolean;
   inGame: boolean;
 }

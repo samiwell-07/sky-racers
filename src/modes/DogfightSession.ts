@@ -1,4 +1,5 @@
-import type { Camera, Object3D, Vector3 } from 'three';
+import { Vector3, type Camera, type Object3D } from 'three';
+import { WEAPON_RULES } from '../combat/types';
 import {
   CombatEffects,
   NO_WEAPON_INPUT,
@@ -17,9 +18,10 @@ import {
 } from '../combat';
 import type { AudioEngine } from '../audio/AudioEngine';
 import type { RadarZone } from '../ui/radar/types';
-import type { DogfightHudState, DogfightHudView, DogfightStanding } from '../ui/dogfight/types';
+import type { DogfightHudState, DogfightHudView, DogfightReticle, DogfightStanding } from '../ui/dogfight/types';
 import { DogfightCore, type DogfightPhase, type DogfightResult } from './dogfight/DogfightCore';
 import { ZoneWall } from './dogfight/ZoneWall';
+import { PickupField, PickupGatesView } from './dogfight/pickups';
 import { chooseDogfightZone, dogfightSpawn, type DogfightSpawn, type DogfightZone, type ZoneWorld } from './dogfight/zone';
 
 export { chooseDogfightZone, dogfightSpawn, dogfightSlot, dogfightZoneRadius, checkZone, type DogfightSpawn, type DogfightZone, type ZoneWorld } from './dogfight/zone';
@@ -39,7 +41,9 @@ export interface DogfightNet {
 }
 
 /** The local jet as the dogfight sees it (Jet satisfies it). */
-export type DogfightJet = JetLike & { readonly damage: { readonly destroyed: boolean; apply(amount: number): boolean } };
+export type DogfightJet = JetLike & {
+  readonly damage: { readonly destroyed: boolean; apply(amount: number): boolean; heal?(amount: number): void };
+};
 
 export type DogfightAudio = Parameters<typeof playCombatEvents>[0] & Pick<AudioEngine, 'updateCombatTones'>;
 
@@ -104,6 +108,22 @@ export interface DogfightFrameContext {
 }
 
 const FEED_SECONDS = 3;
+/** Seconds the gun crosshair / lock box stay red after a hit. */
+const GUN_HIT_FLASH = 0.25;
+const MISSILE_HIT_FLASH = 0.8;
+/** Distance (m) ahead of the nose where the gun crosshair and the lock box are projected. */
+const GUN_AIM_DISTANCE = 600;
+const BOX_DISTANCE = 1500;
+const _f = new Vector3();
+const _r = new Vector3();
+const _u = new Vector3();
+const _pt = new Vector3();
+
+function projectNdc(p: Vector3, camera: Camera): [number, number] | null {
+  _pt.copy(p).project(camera);
+  if (_pt.z > 1 || _pt.z < -1) return null;
+  return [_pt.x, _pt.y];
+}
 
 /** @param killer name of the pilot credited with the kill (null: nobody). */
 function deathText(cause: DeathCause, killer: string | null): string {
@@ -135,6 +155,8 @@ export class DogfightSession {
   readonly players: number;
   readonly effects: CombatEffects | null;
   readonly wall: ZoneWall | null;
+  readonly pickups: PickupField;
+  private readonly pickupView: PickupGatesView | null;
   private readonly opts: DogfightSessionOptions;
   private readonly names = new Map<string, string>();
   /** Opponents between their 'destroyed' and 'respawned'. */
@@ -143,6 +165,9 @@ export class DogfightSession {
   private readonly unsubs: Unsubscribe[] = [];
   private readonly targets: Combatant[] = [];
   private feed: { text: string; ttl: number } | null = null;
+  private gunHitTimer = 0;
+  private missileHitTimer = 0;
+  private reticle: DogfightReticle | null = null;
   private disposed = false;
 
   constructor(options: DogfightSessionOptions) {
@@ -156,13 +181,16 @@ export class DogfightSession {
     this.weapons = new WeaponSystem(options.selfId, options.weaponOptions);
     this.self = combatantFromJet(options.selfId, options.jet, () => this.core.fighting && !options.jet.damage.destroyed);
     this.groundHeight = options.groundHeight ?? ((x, z) => Math.max(world.heightAt(x, z), world.waterLevelAt(x, z)));
+    this.pickups = new PickupField(this.zone, this.groundHeight, options.seed);
     if (options.scene) {
       this.effects = new CombatEffects();
       this.wall = new ZoneWall(this.zone);
-      options.scene.add(this.effects.group, this.wall.mesh);
+      this.pickupView = new PickupGatesView();
+      options.scene.add(this.effects.group, this.wall.mesh, this.pickupView.group);
     } else {
       this.effects = null;
       this.wall = null;
+      this.pickupView = null;
     }
 
     const { net } = options;
@@ -254,6 +282,12 @@ export class DogfightSession {
     targets.length = 0;
     for (const c of ctx.opponents) if (c.id !== this.opts.selfId && !this.dead.has(c.id)) targets.push(c);
     this.weapons.update(dt, this.self, targets, input, this.groundHeight);
+    for (const g of this.pickups.update(dt, this.self.position, this.core.fighting && this.self.alive)) {
+      if (g.kind === 'health') this.opts.jet.damage.heal?.(g.amount);
+      else if (g.kind === 'missile') this.weapons.addMissiles(g.amount);
+      else this.weapons.addFlares(g.amount);
+      this.showFeed(g.label);
+    }
     this.flush();
   }
 
@@ -273,9 +307,35 @@ export class DogfightSession {
       audio.updateCombatTones(this.core.fighting ? this.weapons.status() : null, dt);
     }
     this.wall?.update(dt, jetPos);
+    this.pickupView?.sync(dt, this.pickups.gates);
     if (this.feed && (this.feed.ttl -= dt) <= 0) this.feed = null;
+    this.gunHitTimer = Math.max(0, this.gunHitTimer - dt);
+    this.missileHitTimer = Math.max(0, this.missileHitTimer - dt);
+    this.reticle = ctx.camera && this.core.fighting && this.self.alive ? this.computeReticle(ctx.camera) : null;
     this.opts.hud?.update(this.hudState());
     this.flush();
+  }
+
+  private computeReticle(camera: Camera): DogfightReticle {
+    const pos = this.self.position;
+    const q = this.self.orientation;
+    camera.updateMatrixWorld();
+    const f = _f.set(0, 0, -1).applyQuaternion(q);
+    const r = _r.set(1, 0, 0).applyQuaternion(q);
+    const u = _u.set(0, 1, 0).applyQuaternion(q);
+    const gun = projectNdc(new Vector3().copy(pos).addScaledVector(f, GUN_AIM_DISTANCE), camera);
+    const half = Math.tan(WEAPON_RULES.missile.lockBoxHalfAngle) * BOX_DISTANCE;
+    const box: [number, number][] = [];
+    for (const [sx, sy] of [[-1, 1], [1, 1], [1, -1], [-1, -1]] as const) {
+      const c = new Vector3().copy(pos).addScaledVector(f, BOX_DISTANCE).addScaledVector(r, sx * half).addScaledVector(u, sy * half);
+      const p = projectNdc(c, camera);
+      if (!p) break;
+      box.push(p);
+    }
+    const s = this.weapons.status();
+    const boxState =
+      this.missileHitTimer > 0 ? 'hit' : s.missiles > 0 && s.lock >= 1 ? 'locked' : s.missiles > 0 && s.lockTargetId !== null ? 'locking' : 'idle';
+    return { gun, gunHit: this.gunHitTimer > 0, box: box.length === 4 ? box : null, boxState };
   }
 
   /** Game's collision code crashed the jet (terrain, obstacle, hard landing). */
@@ -291,6 +351,8 @@ export class DogfightSession {
         this.core.noteDamage(e.by);
         if (this.core.fighting && this.opts.jet.damage.apply(e.damage)) this.destroyLocal(e.by, e.cause);
       } else if (e.type === 'hit') {
+        if (e.cause === 'missile') this.missileHitTimer = MISSILE_HIT_FLASH;
+        else this.gunHitTimer = GUN_HIT_FLASH;
         this.showFeed(e.cause === 'missile' ? 'Missile hit!' : 'Hit!');
       }
     }
@@ -324,6 +386,7 @@ export class DogfightSession {
       respawnIn: c.phase === 'dead' ? c.respawnTimer : null,
       deathText: c.phase === 'dead' && death ? deathText(death.cause, death.by !== null && this.names.has(death.by) ? this.nameOf(death.by) : null) : null,
       feed: this.feed?.text ?? null,
+      reticle: this.reticle,
       result: c.result,
     };
   }
@@ -340,6 +403,7 @@ export class DogfightSession {
       this.effects.dispose();
     }
     this.wall?.dispose();
+    this.pickupView?.dispose();
     this.opts.hud?.dispose();
     this.opts.audio?.updateCombatTones(null, 0);
   }

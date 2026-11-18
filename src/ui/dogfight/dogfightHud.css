@@ -301,3 +301,26 @@
     opacity: 0.25;
   }
 }
+
+/* Gun crosshair and missile lock box (drawn in NDC: viewBox -1..1, stretched to the screen). */
+.df-hud .df-reticle {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.df-reticle .df-gun,
+.df-reticle .df-lockbox {
+  fill: none;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+}
+.df-reticle .df-gun { stroke: #fff; }
+.df-reticle .df-gun.hit { stroke: #ff2a2a; }
+.df-reticle .df-lockbox.idle { stroke: #9a9a9a; }
+.df-reticle .df-lockbox.locking { stroke: #ffd400; }
+.df-reticle .df-lockbox.locked { stroke: #2bff5a; stroke-width: 3px; }
+.df-reticle .df-lockbox.hit { stroke: #ff2a2a; stroke-width: 3px; }

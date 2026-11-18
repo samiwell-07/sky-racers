@@ -1,12 +1,15 @@
 import { Quaternion, Vector3 } from 'three';
 import type { CombatMessage, DogfightScore } from '../combat/types';
-import type { Lobby, LobbySettings, LobbySummary } from './lobbyTypes';
+import { FACTORY_APPEARANCE, loadJetAppearance, onJetAppearanceSaved, parseJetAppearance, sameJetAppearance, type JetAppearance } from '../entities/jet/jetAppearance';
+import { JET_CATALOG } from '../entities/jet/jetCatalog';
+import type { Lobby, LobbySettings, LobbySummary, LobbyTeam } from './lobbyTypes';
 import { SnapshotBuffer, type Snapshot } from './SnapshotBuffer';
 
 export interface RemotePlayerInfo {
   id: string;
   name: string;
   jetId: string;
+  appearance: JetAppearance;
 }
 
 export interface LocalNetState {
@@ -63,9 +66,12 @@ export class NetClient {
   private readonly buffers = new Map<string, SnapshotBuffer>();
   private readonly progress = new Map<string, RemoteProgress>();
   private lastSendTime = -Infinity;
+  private profile: { name: string; jetId: string } | null = null;
+  private unsubscribeAppearance?: () => void;
   private readonly scratch: Snapshot = { time: 0, position: [0, 0, 0], quaternion: [0, 0, 0, 1], velocity: [0, 0, 0], throttle: 0, afterburner: false };
 
   readonly joined = new Signal<[RemotePlayerInfo]>();
+  readonly modelChanged = new Signal<[RemotePlayerInfo]>();
   readonly left = new Signal<[string]>();
   readonly events = new Signal<[string, string, unknown]>();
   /** Lobby changed (null = not in a lobby). */
@@ -137,7 +143,10 @@ export class NetClient {
         return;
       }
       this.ws = ws;
-      ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', name, jetId }));
+      ws.onopen = () => {
+        this.setProfile(name, jetId);
+        this.unsubscribeAppearance = onJetAppearanceSaved(() => this.sendProfile());
+      };
       ws.onerror = () => fail(`Could not reach ${url}`);
       ws.onclose = () => {
         clearTimeout(timer);
@@ -179,7 +188,15 @@ export class NetClient {
 
   /** Update name / jet shown to others. */
   setProfile(name: string, jetId: string): void {
-    this.send({ type: 'hello', name, jetId });
+    this.profile = { name, jetId };
+    this.sendProfile();
+  }
+
+  private sendProfile(): void {
+    if (!this.profile) return;
+    // Send all five once per profile edit so switching a host rule needs no round-trip.
+    const appearances = Object.fromEntries(JET_CATALOG.map(({ id }) => [id, loadJetAppearance(id)]));
+    this.send({ type: 'hello', ...this.profile, appearances });
   }
 
   listLobbies(): void {
@@ -212,6 +229,10 @@ export class NetClient {
   }
   kick(id: string): void {
     this.send({ type: 'kick', id });
+  }
+  /** Host only: moves a player to another team. */
+  setTeam(id: string, team: LobbyTeam): void {
+    this.send({ type: 'setTeam', id, team });
   }
   sendChat(text: string): void {
     this.send({ type: 'chat', text });
@@ -277,6 +298,9 @@ export class NetClient {
   }
 
   private reset(): void {
+    this.unsubscribeAppearance?.();
+    this.unsubscribeAppearance = undefined;
+    this.profile = null;
     this.ws = null;
     this.selfId = null;
     this.setLobby(null);
@@ -288,7 +312,9 @@ export class NetClient {
   private setLobby(lobby: Lobby | null): void {
     this.currentLobby = lobby;
     const next = new Map<string, RemotePlayerInfo>();
-    for (const p of lobby?.players ?? []) if (p.id !== this.selfId) next.set(p.id, { id: p.id, name: p.name, jetId: p.jetId });
+    for (const p of lobby?.players ?? []) {
+      if (p.id !== this.selfId) next.set(p.id, { id: p.id, name: p.name, jetId: p.jetId, appearance: parseJetAppearance(p.appearance) ?? FACTORY_APPEARANCE });
+    }
     for (const id of [...this.playerMap.keys()]) {
       if (!next.has(id)) {
         this.playerMap.delete(id);
@@ -299,9 +325,11 @@ export class NetClient {
     }
     for (const [id, info] of next) {
       const old = this.playerMap.get(id);
-      if (old && old.jetId === info.jetId && old.name === info.name) continue;
-      if (old) this.left.emit(id); // jet or name changed: recreate
       this.playerMap.set(id, info);
+      if (old) {
+        if (old.jetId !== info.jetId || !sameJetAppearance(old.appearance, info.appearance)) this.modelChanged.emit(info);
+        continue;
+      }
       if (!this.buffers.has(id)) this.buffers.set(id, new SnapshotBuffer());
       this.joined.emit(info);
     }

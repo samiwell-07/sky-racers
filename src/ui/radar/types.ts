@@ -16,6 +16,8 @@ export type RadarContactKind =
   /** A missile tracking the local player. */
   | 'incomingMissile'
   | 'flare'
+  /** Dogfight pickup gate (dot in `color`). */
+  | 'pickup'
   | 'airfield';
 
 export interface RadarContact {
@@ -26,6 +28,8 @@ export interface RadarContact {
   /** Rotation about +Y (0 = toward -Z), for jets drawn as arrows. */
   heading?: number;
   label?: string;
+  /** CSS colour override (pickup gates). */
+  color?: string;
 }
 
 /** Circular combat zone (dogfight) drawn as a ring. */

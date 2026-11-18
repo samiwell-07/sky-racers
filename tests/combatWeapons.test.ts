@@ -112,6 +112,19 @@ describe('seeker lock', () => {
     expect(s.targetId).toBeNull();
   });
 
+  it('keeps the target it is locking while it stays in the box, and drops it as soon as it leaves', () => {
+    const s = new SeekerLock();
+    const far = jet('far', new Vector3(0, 0, -3000), new Vector3());
+    for (let i = 0; i < 30; i++) s.update(DT, self, [far]);
+    const near = jet('near', new Vector3(0, 0, -1000), new Vector3());
+    s.update(DT, self, [far, near]);
+    expect(s.targetId).toBe('far');
+    far.position.set(800, 0, -3000); // ~15° off: outside the 10° box but inside the old 28° cone
+    s.update(DT, self, [far]);
+    expect(s.targetId).toBeNull();
+    expect(s.progress).toBe(0);
+  });
+
   it('ignores targets out of range, dead or behind, picks the closest, and restarts on a new target', () => {
     const s = new SeekerLock();
     const far = jet('far', new Vector3(0, 0, -(WEAPON_RULES.missile.lockRange + 100)), new Vector3());
@@ -204,9 +217,18 @@ describe('WeaponSystem', () => {
     expect(ws.status()).toMatchObject({ missiles: 4, flares: 30, gunHeat: 0, gunOverheated: false, lock: 0 });
   });
 
+  it('pickup rewards add missiles and flares, capped at the full count', () => {
+    const { me, ws } = setup();
+    run(ws, me, [], DT, { fireMissile: true, releaseFlares: true });
+    expect(ws.status()).toMatchObject({ missiles: 3, flares: 28 });
+    ws.addMissiles(2);
+    ws.addFlares(10);
+    expect(ws.status()).toMatchObject({ missiles: 4, flares: 30 });
+  });
+
   it('missile: guided shot hits, with ~10 Hz updates and a missileEnd naming the target', () => {
     const { me, foe, ws } = setup();
-    foe.position.set(400, 1000, -2500);
+    foe.position.set(150, 1000, -2500);
     foe.velocity.set(150, 0, -150);
     run(ws, me, [foe], 1.3);
     run(ws, me, [foe], DT, { fireMissile: true });

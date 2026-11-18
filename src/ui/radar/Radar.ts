@@ -46,7 +46,7 @@ const COLORS = {
 } as const;
 
 /** Contacts that stay on the rim as a chevron when beyond the range. */
-const CLAMPED: ReadonlySet<RadarContact['kind']> = new Set(['enemy', 'player', 'nextGate', 'incomingMissile']);
+const CLAMPED: ReadonlySet<RadarContact['kind']> = new Set(['enemy', 'player', 'nextGate', 'incomingMissile', 'pickup']);
 
 /**
  * Round heading-up HUD radar: the player's arrow fixed in the centre pointing up, the world rotating
@@ -239,7 +239,7 @@ export class Radar {
       if (!CLAMPED.has(c.kind)) return;
       clampToRadius(p, RADIUS - 5);
       const blink = c.kind === 'incomingMissile' ? flash(now) : 1;
-      drawChevron(ctx, p.x, p.y, colorOf(c.kind), blink);
+      drawChevron(ctx, p.x, p.y, c.color ?? colorOf(c.kind), blink);
       return;
     }
     const rot = c.heading === undefined ? 0 : relativeBearing(c.heading, self.heading);
@@ -273,6 +273,9 @@ export class Radar {
       case 'flare':
         drawDot(ctx, p.x, p.y, 1.1, COLORS.flare);
         break;
+      case 'pickup':
+        drawDot(ctx, p.x, p.y, 3.5, c.color ?? colorOf(c.kind));
+        break;
       case 'airfield':
         drawRunway(ctx, p.x, p.y, rot, Math.max(5, Math.min(16, 1500 * ppm)));
         if (c.label) drawLabel(ctx, c.label, p.x, p.y + 12);
@@ -292,6 +295,7 @@ function colorOf(kind: RadarContact['kind']): string {
     case 'missile': return COLORS.missile;
     case 'incomingMissile': return COLORS.incoming;
     case 'flare': return COLORS.flare;
+    case 'pickup': return '#ffffff';
     case 'airfield': return COLORS.airfield;
   }
 }

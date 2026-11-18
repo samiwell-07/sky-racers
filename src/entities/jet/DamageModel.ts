@@ -15,6 +15,11 @@ export class DamageModel {
     return this.health <= 0;
   }
 
+  /** Repairs (pickup gate); a destroyed jet stays destroyed. */
+  heal(amount: number): void {
+    if (this.health > 0) this.health = Math.min(1, this.health + amount);
+  }
+
   get destroyed(): boolean {
     return this.health <= 0;
   }

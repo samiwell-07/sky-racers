@@ -1,4 +1,4 @@
-import { JET_CATALOG, getJetDefinition, type JetDefinition } from '../entities/jet/jetCatalog';
+import { JET_CATALOG, type JetDefinition } from '../entities/jet/jetCatalog';
 import type { CourseLibrary } from '../race/CourseLibrary';
 import { courseSummary } from '../race/Course';
 import { GhostStore } from '../race/Ghost';
@@ -10,8 +10,9 @@ import type { Leaderboard } from '../race/Leaderboard';
 import type { SettingsStore } from '../settings/Settings';
 import { button, checkbox, choiceButton, h, markBack, select, slider } from './dom';
 import { HangarPreview } from './HangarPreview';
+import { hangarCustomize } from './HangarCustomize';
 import { jetHandling } from './jetHandling';
-import { findByKey, focusEl, focusInitial, focusKey, screenKey } from './menuFocus';
+import { findByKey, focusEl, focusInitial, focusKey, screenKey, setMenuNavHandler } from './menuFocus';
 import type { SettingsPanel } from './SettingsPanel';
 import type { LobbyMode } from '../net/lobbyTypes';
 import type { RaceDifficulty, RaceLayout } from '../race/generatedCourse';
@@ -41,6 +42,13 @@ export interface MenuActions {
 
 export const courseKey = (courseId: string, laps: number): string => `${courseId}@${laps}`;
 
+export interface AircraftSelectionOptions {
+  initialId: string;
+  allowPilotsChoice?: boolean;
+  onConfirm(id: string): string | null;
+  onBack(): void;
+}
+
 /** Main menu, sub-screens and the in-game pause menu. */
 export class MainMenu {
   private readonly root: HTMLDivElement;
@@ -52,6 +60,11 @@ export class MainMenu {
   private lastFocusKey = '';
   private lastFocused: HTMLElement | null = null;
   private preview: HangarPreview | null = null;
+  private hangarOpen = false;
+  private releaseHangarNav: (() => void) | null = null;
+
+  get hangarVisible(): boolean { return this.hangarOpen && this.visible; }
+  get currentPanel(): HTMLElement | null { return this.root.firstElementChild as HTMLElement | null; }
 
   constructor(
     container: HTMLElement,
@@ -100,6 +113,7 @@ export class MainMenu {
     if (!panel.classList.contains('hangar-panel')) this.closeHangar();
     this.root.classList.remove('hidden');
     this.root.classList.toggle('transparent', transparent);
+    this.root.classList.toggle('hangar-open', panel.classList.contains('hangar-panel'));
     this.root.replaceChildren(panel);
     // Returning to a screen (or re-rendering it) restores its focus; a new screen focuses its main control.
     const key = this.focusMemory.get(screenKey(panel));
@@ -169,49 +183,105 @@ export class MainMenu {
     );
   }
 
-  /** Hangar: rotating 3D preview, role and relative handling of the selected jet. */
-  private showJetSelect(): void {
+  /** Shared, transactional aircraft picker for the main menu and multiplayer callers. */
+  showJetSelect(options: AircraftSelectionOptions = {
+    initialId: this.settings.values.jetId,
+    onConfirm: (id) => {
+      const previous = this.settings.values.jetId;
+      this.settings.set('jetId', id);
+      const error = this.settings.lastSaveError;
+      if (error) {
+        this.settings.set('jetId', previous);
+        return `Could not remember your aircraft: ${error}`;
+      }
+      this.showMain();
+      return null;
+    },
+    onBack: () => this.showMain(),
+  }): void {
+    this.closeHangar();
     const preview = (this.preview ??= new HangarPreview());
     const view = h('div', { class: 'hangar-view' });
     const info = h('div', { class: 'hangar-info', 'aria-live': 'polite' });
-    const choices = JET_CATALOG.map((j) =>
-      choiceButton(
-        [h('b', {}, j.name), h('span', { class: 'hangar-role' }, roleOf(j)), h('span', { class: 'hangar-badge' }, 'Selected')],
-        false,
-        () => choose(j),
-        'hangar-choice',
-      ),
-    );
-    const choose = (def: JetDefinition): void => {
-      if (this.settings.values.jetId !== def.id) this.settings.set('jetId', def.id);
-      JET_CATALOG.forEach((j, i) => {
-        const on = j.id === def.id;
-        choices[i]!.setAttribute('aria-pressed', String(on));
-        choices[i]!.classList.toggle('selected', on);
-      });
-      info.replaceChildren(...hangarInfo(def));
-      if (preview.available) preview.setJet(def);
+    const status = h('p', { class: 'hangar-location', 'aria-live': 'polite' });
+    const error = h('p', { class: 'menu-error', role: 'alert' });
+    let index = Math.max(0, JET_CATALOG.findIndex((j) => j.id === options.initialId));
+    let pilotsChoice = !!options.allowPilotsChoice && options.initialId === '';
+    const choose = (delta: number): void => {
+      if (!pilotsChoice) index = Math.max(0, Math.min(JET_CATALOG.length - 1, index + delta));
+      pilotsChoice = false;
+      update();
+      if (preview.available) preview.select(index);
     };
+    const previous = button('Previous jet', () => choose(-1));
+    const next = button('Next jet', () => choose(1));
+    const confirm = button('Confirm aircraft', () => {
+      if (!this.hangarOpen) return;
+      error.textContent = options.onConfirm(pilotsChoice ? '' : JET_CATALOG[index]!.id) ?? '';
+    }, 'primary');
+    const stage = h('button', { type: 'button', class: 'hangar-inspect', 'data-autofocus': '', 'aria-label': 'Inspect aircraft. Left and right to browse; Enter or Space to confirm.', onclick: () => confirm.click() });
+    const pilotRule = options.allowPilotsChoice
+      ? choiceButton(["Pilot's choice"], pilotsChoice, () => { pilotsChoice = true; update(); }, 'hangar-pilot-rule')
+      : null;
+    const update = (): void => {
+      const def = JET_CATALOG[index]!;
+      previous.disabled = !pilotsChoice && index === 0;
+      next.disabled = !pilotsChoice && index === JET_CATALOG.length - 1;
+      pilotRule?.setAttribute('aria-pressed', String(pilotsChoice));
+      status.textContent = pilotsChoice ? "HOST RULE · Pilot's choice" : `HANGAR ${Math.floor(index / 2) + 1} / 3 · BAY ${index % 2 + 1} · ${index + 1} / ${JET_CATALOG.length}`;
+      info.replaceChildren(...(pilotsChoice
+        ? [h('h3', { class: 'hangar-name' }, "Pilot's choice"), h('p', {}, 'Each pilot chooses their own aircraft.')]
+        : hangarInfo(def)));
+      stage.setAttribute('aria-label', `${pilotsChoice ? "Pilot's choice" : def.name}. Left and right to browse; Enter or Space to confirm.`);
+      error.textContent = '';
+    };
+    const customize = options.allowPilotsChoice ? null : button('Customize', () => {
+      const bay = index;
+      const editor = hangarCustomize(JET_CATALOG[bay]!, (a) => preview.previewAppearance(bay, a), (saved) => {
+        panel.replaceChildren(view, header, stage, info, controls);
+        if (saved) status.textContent += ' · Appearance saved';
+        focusEl(customize);
+        enableBrowse();
+      });
+      this.releaseHangarNav?.();
+      this.releaseHangarNav = null;
+      update();
+      panel.replaceChildren(view, header, editor.panel, editor.controls);
+      focusEl(editor.panel.querySelector('select'));
+    });
+    const header = h('header', { class: 'hangar-header' }, h('h2', {}, 'Aircraft hangars'), status);
+    const controls = h('footer', { class: 'hangar-controls' }, error,
+      h('div', { class: 'menu-row' }, previous, next, pilotRule, customize, confirm, button('Back', () => { if (this.hangarOpen) options.onBack(); })),
+      h('p', { class: 'hangar-help' }, '← / → on aircraft to browse · Tab / d-pad to move · Enter / Space / A activate · Esc / B back'),
+    );
     const panel = h(
       'div',
       { class: 'menu-panel hangar-panel', 'data-screen': 'hangar' },
-      h('h2', {}, 'Hangar'),
-      h('p', { class: 'menu-sub' }, 'Choose your jet. Your choice is saved and used for your next flight.'),
-      h(
-        'div',
-        { class: 'hangar' },
-        h('div', { class: 'hangar-stage' }, view, info),
-        h('div', { class: 'hangar-list', role: 'group', 'aria-label': 'Aircraft' }, ...choices),
-      ),
-      h('div', { class: 'menu-row' }, button('Back', () => this.showMain(), 'primary')),
+      view,
+      header,
+      stage,
+      info,
+      controls,
     );
-    choose(getJetDefinition(this.settings.values.jetId));
+    update();
     this.show(panel);
-    preview.attach(view);
-    if (!preview.available) view.replaceChildren(h('p', { class: 'menu-sub' }, '3D preview unavailable.'));
+    this.hangarOpen = true;
+    const enableBrowse = (): void => {
+      this.releaseHangarNav = setMenuNavHandler(panel, (action) => {
+        if (document.activeElement !== stage || (action !== 'left' && action !== 'right')) return false;
+        choose(action === 'left' ? -1 : 1);
+        return true;
+      });
+    };
+    enableBrowse();
+    preview.attach(view, index);
+    if (!preview.available) view.replaceChildren(h('p', { class: 'hangar-unavailable', role: 'status' }, '3D hangar unavailable. Use Previous / Next to browse the aircraft information, then Confirm or Back.'));
   }
 
   private closeHangar(): void {
+    this.hangarOpen = false;
+    this.releaseHangarNav?.();
+    this.releaseHangarNav = null;
     this.preview?.detach();
   }
 
@@ -496,9 +566,6 @@ export class MainMenu {
     );
   }
 }
-
-/** Short role from the catalog description ("Heavy interceptor: ..." -> "Heavy interceptor"). */
-const roleOf = (j: JetDefinition): string => j.description.split(/[.:]/)[0]!.trim();
 
 function hangarInfo(def: JetDefinition): Node[] {
   const traits = jetHandling(def);

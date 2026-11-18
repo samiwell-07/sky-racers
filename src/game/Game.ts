@@ -14,8 +14,10 @@ import { Explosion } from '../entities/effects/Explosion';
 import { Jet } from '../entities/jet/Jet';
 import { GEAR_HEIGHT } from '../entities/jet/JetModel';
 import { getJetDefinition } from '../entities/jet/jetCatalog';
+import { loadJetAppearance, sameJetAppearance } from '../entities/jet/jetAppearance';
 import { InputManager } from '../input/InputManager';
 import { KeyBindings, keyLabel } from '../input/KeyBindings';
+import { PadBindings } from '../input/PadBindings';
 import { NetClient } from '../net/NetClient';
 import { BUILTIN_COURSES, type CourseDef } from '../race/Course';
 import type { Lobby } from '../net/lobbyTypes';
@@ -46,7 +48,7 @@ import { createTerrainMaterial } from '../world/terrain/TerrainMaterial';
 import { TerrainStreamer } from '../world/terrain/TerrainStreamer';
 import { RaceSession, type Standing } from './RaceSession';
 import type { InputAction } from '../config/controlsConfig';
-import { FlightSchool, padHint, snapshotOf } from '../modes/FlightSchool';
+import { FlightSchool, snapshotOf } from '../modes/FlightSchool';
 import { escapeHtml, LESSON_WORLD, LESSONS, LessonProgressStore, nextLesson, type LessonDef, type PromptKeys } from '../modes/lessons';
 import { describeSection, PracticeSession, selectSection, type PracticeChoice } from '../modes/PracticeSession';
 import { formatRaceClock } from '../race/Splits';
@@ -64,6 +66,7 @@ import { generateCourseForRequest } from '../race/CourseGenerator';
 import { Radar } from '../ui/radar/Radar';
 import { RadarContactList, addAirfieldContact, addGateContacts, addJetContact, addMissileContacts, selfFromPose } from '../ui/radar/radarProviders';
 import { DogfightSession, dogfightSlot } from '../modes/DogfightSession';
+import { PICKUP_REWARDS } from '../modes/dogfight/pickups';
 import { DogfightHud } from '../ui/dogfight/DogfightHud';
 import type { Combatant, WeaponInput } from '../combat';
 import { DOGFIGHT_RULES } from '../combat/types';
@@ -110,6 +113,7 @@ export class Game {
   // Settings & input
   private readonly settings = new SettingsStore();
   private readonly bindings = new KeyBindings();
+  private readonly padBindings = new PadBindings();
   private readonly input: InputManager;
   private readonly flightConfig = createFlightConfig();
   private readonly cameraConfig = createCameraConfig();
@@ -214,7 +218,7 @@ export class Game {
     const preset = GRAPHICS_PRESETS[this.settings.values.graphics];
     // Anti-aliasing can only be chosen when the WebGL context is created (applies after a reload).
     this.renderer = createRenderer(container, preset.antialias);
-    this.input = new InputManager(this.bindings, this.settings.values, this.renderer.domElement);
+    this.input = new InputManager(this.bindings, this.settings.values, this.renderer.domElement, window, this.padBindings);
     this.input.onFocusChange((focused) => this.onFocusChange(focused));
     this.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
 
@@ -235,7 +239,7 @@ export class Game {
     this.cameraTarget = { position: this.jet.object.position, quaternion: this.jet.object.quaternion, speed: 0, cockpitEye: cockpitEyeFor(this.jet.definition.id) };
 
     this.gforce = new GForceOverlay(container);
-    this.hud = new Hud(container, this.bindings);
+    this.hud = new Hud(container, this.bindings, this.padBindings);
     const sv = this.settings.values;
     this.radar = new Radar(this.hud.element, { range: sv.radarRange, visible: sv.showRadar, scale: sv.hudScale });
     this.hud.mountRadar(this.radar.root);
@@ -244,7 +248,7 @@ export class Game {
     };
     this.raceHud = new RaceHud(container);
     this.modeHud = new ModeHud(container);
-    const settingsPanel = (this.settingsPanel = new SettingsPanel(this.settings, this.bindings, this.input));
+    const settingsPanel = (this.settingsPanel = new SettingsPanel(this.settings, this.bindings, this.input, this.padBindings));
     this.menu = new MainMenu(container, this.settings, this.courses, this.leaderboard, settingsPanel, {
       startFreeFlight: (world) => this.startFreeFlight(world),
       startRace: (id) => {
@@ -267,11 +271,11 @@ export class Game {
     // Controller d-pad/A/B and keyboard arrows/Escape move through the menus (not during key capture).
     attachMenuNavigation(
       (cb) => this.input.onMenuNavigate(cb),
-      () => this.input.captureNextKey !== null,
-      () => this.input.cancelKeyCapture(),
+      () => this.input.capturing,
+      () => this.input.cancelCapture(),
     );
-    // Leaving or redrawing a menu screen abandons a pending key capture.
-    this.menu.onScreenChange = () => this.input.cancelKeyCapture();
+    // Leaving or redrawing a menu screen abandons a pending key / button capture.
+    this.menu.onScreenChange = () => this.input.cancelCapture();
     this.remotes = new RemotePlayers(this.net, this.scene, (t) => {
       if (this.mpGame) this.hud.showMessage(t, 3);
     });
@@ -340,15 +344,15 @@ export class Game {
   private createPlayerJet(jetId = this.settings.values.jetId): Jet {
     const def = getJetDefinition(jetId);
     Object.assign(this.flightConfig, DEFAULT_FLIGHT_CONFIG, def.flight);
-    const jet = new Jet(def, this.flightConfig);
+    const jet = new Jet(def, this.flightConfig, true, loadJetAppearance(def.id));
     this.scene.add(jet.object);
     return jet;
   }
 
-  /** Rebuild the player jet if the selected type (or the lobby host's forced jet) changed. */
+  /** Refresh the airframe and its saved finish before spawning for the next flight. */
   private ensurePlayerJet(lobby: Lobby | null = null): void {
     const jetId = lobby ? lobbyJetId(lobby.settings, this.settings.values.jetId) : this.settings.values.jetId;
-    if (this.jet.definition.id === jetId) {
+    if (this.jet.definition.id === jetId && sameJetAppearance(this.jet.appearance, loadJetAppearance(jetId))) {
       Object.assign(this.flightConfig, DEFAULT_FLIGHT_CONFIG, this.jet.definition.flight);
       return;
     }
@@ -710,7 +714,7 @@ export class Game {
         const codes = this.bindings.get(action);
         return codes.length ? codes.slice(0, 2).map(keyLabel).join(' / ') : 'unbound';
       },
-      pad: (a: InputAction) => (pad ? padHint(a) : null),
+      pad: (a: InputAction) => (pad ? this.padBindings.hint(a) : null),
     };
   }
 
@@ -1011,6 +1015,7 @@ export class Game {
       addMissileContacts(list, w.missiles, w.selfId);
       addMissileContacts(list, w.remoteMissiles, w.selfId);
       for (const f of w.flares) list.add('flare', f.position.x, f.position.y, f.position.z);
+      for (const g of df.pickups.gates) list.add('pickup', g.position.x, g.position.y, g.position.z).color = PICKUP_REWARDS[g.kind].color;
     }
     const s = this.jet.flight.state;
     this.radar.update({ self: selfFromPose(s.position, s.orientation, this.radarSelf), contacts: list.items, zone: df ? df.radarZone() : null });
@@ -1064,7 +1069,7 @@ export class Game {
       if (this.mpGame && this.forcedView) this.hud.showMessage(`The host locked the ${this.forcedView} view`, 1.5);
       else this.cameras.toggle(this.cameraTarget);
     }
-    if (i.consumePressed('toggleHelp')) this.hud.setHelpVisible(!this.hud.helpVisible);
+    if (i.consumePressed('toggleHelp')) this.hud.setHelpVisible(!this.hud.helpVisible, i.gamepadConnected);
     if (i.consumePressed('toggleGear')) {
       if (this.ground.grounded) this.hud.showMessage('Gear locked on the ground', 1.5);
       else {
@@ -1178,13 +1183,16 @@ export class Game {
     const result = race.finish(this.jet.position, this.remoteStandings());
     if (this.mpGame) this.net.sendEvent('finish', result.time);
     this.audio.playLapComplete();
-    this.raceHud.showResults({
-      courseName: race.course.def.name,
-      ...result,
-      multiplayer: this.mpGame,
-      onRestart: () => this.restart(),
-      onMenu: () => (this.mpGame ? this.backToLobby() : this.showMenu()),
-    });
+    this.raceHud.showResults(
+      {
+        courseName: race.course.def.name,
+        ...result,
+        multiplayer: this.mpGame,
+        onRestart: () => this.restart(),
+        onMenu: () => (this.mpGame ? this.backToLobby() : this.showMenu()),
+      },
+      race.standings(this.jet.position, this.remoteStandings()),
+    );
   }
 
   /** Race standings entries for the other players in the multiplayer lobby. */
@@ -1216,7 +1224,14 @@ export class Game {
     // Menu mode: keys go to the menu, the gamepad navigates it, and nothing leaks into flight.
     this.input.setMenuMode(this.mode === 'menu' || this.paused || this.mpMenuOpen);
     this.input.poll(frameDt);
+    // A controller press unlocks audio like a key/click would (where the browser allows it).
+    if (this.input.gamepadActivity) this.audio.resume();
     this.handleActions();
+    if (this.mode === 'menu' && this.menu.hangarVisible) {
+      this.audio.update(null, frameDt);
+      this.audio.updateFlybys(null, null);
+      return;
+    }
     this.time += frameDt;
     const flying = this.mode !== 'menu';
     const dt = this.paused ? 0 : frameDt;
@@ -1420,6 +1435,7 @@ export class Game {
         },
         hudDt,
       );
+      if (race.state === 'finished') this.raceHud.updateResultsStandings(standings);
     }
   }
 

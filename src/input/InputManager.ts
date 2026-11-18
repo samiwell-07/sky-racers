@@ -4,6 +4,7 @@ import type { FlightControls } from '../physics/types';
 import { GamepadInput, type GamepadButtonAction } from './GamepadInput';
 import type { KeyBindings } from './KeyBindings';
 import { MouseFlight } from './MouseFlight';
+import { PadBindings } from './PadBindings';
 import { clamp } from '../utils/math';
 
 export type MenuNavAction = 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back';
@@ -49,6 +50,10 @@ export class InputManager {
   captureNextKey: ((code: string) => void) | null = null;
   /** Called when a pending key capture is abandoned (menu left, pause, controller navigation). */
   captureCancelled: (() => void) | null = null;
+  /** When set, the next controller button press is reported here (button remapping); Esc cancels. */
+  captureNextPadButton: ((button: number) => void) | null = null;
+  /** Called when a pending controller button capture is abandoned. */
+  padCaptureCancelled: (() => void) | null = null;
   enabled = true;
 
   private menuModeOn = false;
@@ -79,6 +84,7 @@ export class InputManager {
     private readonly settings: GameSettings,
     element: HTMLElement,
     private readonly target: Window = window,
+    readonly padBindings: PadBindings = new PadBindings(null),
   ) {
     this.padSettings = {
       deadZone: settings.gamepadDeadZone,
@@ -90,7 +96,7 @@ export class InputManager {
       throttleMax: settings.throttleMax,
     };
     this.mouseSettings = { sensitivity: settings.mouseSensitivity, invertPitch: settings.invertPitch };
-    this.gamepad = new GamepadInput(this.padSettings);
+    this.gamepad = new GamepadInput(this.padSettings, padBindings);
     this.mouse = new MouseFlight(element, this.mouseSettings);
     this.doc = (target as { document?: Document }).document ?? null;
     target.addEventListener('keydown', this.onKeyDown as unknown as EventListener);
@@ -241,10 +247,23 @@ export class InputManager {
   /** Poll gamepad and mouse once per frame. */
   poll(dt: number): void {
     this.padState = this.gamepad.poll();
-    for (const a of this.padState.pressed) {
-      if (!this.menuModeOn || MENU_PAD_ACTIONS.has(a)) this.pressed.add(a);
+    if (this.captureNextPadButton) {
+      // Remapping: the first new button press is the answer; nothing else (menu nav, actions) sees it.
+      const button = this.padState.buttonsPressed[0];
+      if (button !== undefined) {
+        const cb = this.captureNextPadButton;
+        this.captureNextPadButton = null;
+        this.padCaptureCancelled = null;
+        cb(button);
+        this.gamepad.suppressHeld();
+      }
+      this.navRepeat.primed = false;
+    } else {
+      for (const a of this.padState.pressed) {
+        if (!this.menuModeOn || MENU_PAD_ACTIONS.has(a)) this.pressed.add(a);
+      }
+      if (this.menuModeOn) this.pollMenuNav(dt);
     }
-    if (this.menuModeOn) this.pollMenuNav(dt);
     this.updateLeverStatus();
     this.mouse.update(dt);
     const axis = (neg: InputAction, pos: InputAction): number => (this.isDown(pos) ? 1 : 0) - (this.isDown(neg) ? 1 : 0);
@@ -259,6 +278,11 @@ export class InputManager {
 
   get gamepadConnected(): boolean {
     return !!this.padState?.connected;
+  }
+
+  /** True on a frame where any controller button went down (menus included). */
+  get gamepadActivity(): boolean {
+    return !!this.padState?.anyPressed;
   }
 
   getFlightControls(): FlightControls {
@@ -365,7 +389,32 @@ export class InputManager {
     cancelled?.();
   }
 
+  /** Abandons a pending controller button capture without rebinding anything. */
+  cancelPadCapture(): void {
+    if (!this.captureNextPadButton) return;
+    const cancelled = this.padCaptureCancelled;
+    this.captureNextPadButton = null;
+    this.padCaptureCancelled = null;
+    cancelled?.();
+  }
+
+  /** True while waiting for a key or controller button to remap. */
+  get capturing(): boolean {
+    return this.captureNextKey !== null || this.captureNextPadButton !== null;
+  }
+
+  /** Abandons any pending key / button capture. */
+  cancelCapture(): void {
+    this.cancelKeyCapture();
+    this.cancelPadCapture();
+  }
+
   private readonly onKeyDown = (e: KeyLikeEvent): void => {
+    if (this.captureNextPadButton && e.code === 'Escape') {
+      e.preventDefault();
+      this.cancelPadCapture();
+      return;
+    }
     if (this.captureNextKey) {
       e.preventDefault();
       const cb = this.captureNextKey;

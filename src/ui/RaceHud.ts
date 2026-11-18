@@ -21,6 +21,15 @@ export interface RaceHudData {
   standings: string[];
 }
 
+/** One racer on the results screen (a subset of RaceSession's Standing). */
+export interface ResultStanding {
+  name: string;
+  isPlayer: boolean;
+  finished: boolean;
+  /** Final scoring time (s), when finished. */
+  time: number;
+}
+
 export interface RaceResults {
   courseName: string;
   time: number;
@@ -52,6 +61,8 @@ export class RaceHud {
   private readonly countdownEl: HTMLDivElement;
   private readonly panel: HTMLDivElement;
   private readonly results: HTMLDivElement;
+  /** Live parts of the open results screen (null when it is closed). */
+  private live: { subtitle: HTMLElement; standings: HTMLElement; categoryLabel: string; key: string } | null = null;
 
   constructor(container: HTMLElement) {
     this.countdownEl = h('div', { class: 'race-center' });
@@ -81,7 +92,7 @@ export class RaceHud {
       <div class="race-standings">${d.standings.join('<br>')}</div>`;
   }
 
-  showResults(r: RaceResults): void {
+  showResults(r: RaceResults, standings: readonly ResultStanding[] = []): void {
     const medalText = r.medal ? `${r.medal.toUpperCase()} MEDAL` : 'No medal';
     const ranked = r.ranked ?? true;
     const table = r.top.length
@@ -98,12 +109,15 @@ export class RaceHud {
       r.leaderboardSaved === false ? h('p', { style: 'color:#ff8a3d' }, 'Leaderboard could not be saved. This result is kept until you close the game.') : null,
       r.rank > 0 ? h('p', {}, `Leaderboard rank #${r.rank}`) : null,
     ];
+    const subtitle = h('p', { class: 'menu-sub' }, `Position ${r.position}/${r.racers}${r.categoryLabel ? ` · ${r.categoryLabel}` : ''}`);
+    const standingsBox = h('div', {});
+    this.live = { subtitle, standings: standingsBox, categoryLabel: r.categoryLabel ?? '', key: '' };
     this.results.replaceChildren(
       h(
         'div',
         { class: 'menu-panel' },
         h('h2', {}, `${r.courseName} – Finished`),
-        h('p', { class: 'menu-sub' }, `Position ${r.position}/${r.racers}${r.categoryLabel ? ` · ${r.categoryLabel}` : ''}`),
+        subtitle,
         h(
           'div',
           { class: 'race-panel', style: 'position:static;text-align:left' },
@@ -112,7 +126,9 @@ export class RaceHud {
           split ? h('div', {}, `Final split vs best ghost: ${split.text}`) : null,
         ),
         h('h3', { class: r.medal ? `medal-${r.medal}` : '' }, medalText),
+        standingsBox,
         ...notices,
+        table ? h('h3', {}, 'Your records') : null,
         table,
         r.multiplayer
           ? h('div', { class: 'menu-row' }, button('Back to lobby', r.onMenu, 'primary'))
@@ -120,9 +136,43 @@ export class RaceHud {
       ),
     );
     this.results.classList.remove('hidden');
+    this.updateResultsStandings(standings);
+  }
+
+  /**
+   * Keeps the open results screen's position and race standings live: racers who finish after the
+   * player (possibly ahead of them, since penalties count) appear as they cross the line.
+   */
+  updateResultsStandings(standings: readonly ResultStanding[]): void {
+    const live = this.live;
+    if (!live || standings.length === 0) return;
+    const key = standings.map((s) => `${s.name}|${s.isPlayer}|${s.finished ? s.time : '-'}`).join(';');
+    if (key === live.key) return;
+    live.key = key;
+    const position = standings.findIndex((s) => s.isPlayer) + 1;
+    const racing = standings.filter((s) => !s.finished).length;
+    live.subtitle.textContent =
+      `Position ${position}/${standings.length}${racing ? ` (provisional: ${racing} still racing)` : ''}${live.categoryLabel ? ` · ${live.categoryLabel}` : ''}`;
+    live.standings.replaceChildren(
+      h('h3', {}, 'Race standings'),
+      h(
+        'table',
+        { class: 'menu-table race-results-standings' },
+        ...standings.map((s, i) =>
+          h(
+            'tr',
+            { class: s.isPlayer ? 'self' : '' },
+            h('td', {}, String(i + 1)),
+            h('td', {}, s.isPlayer ? h('b', {}, `${s.name} (you)`) : s.name),
+            h('td', { class: s.finished ? '' : 'lobby-dim' }, s.finished ? formatRaceClock(s.time) : 'Racing…'),
+          ),
+        ),
+      ),
+    );
   }
 
   hideResults(): void {
+    this.live = null;
     this.results.classList.add('hidden');
   }
 }

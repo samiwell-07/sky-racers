@@ -1,12 +1,14 @@
-import { JET_CATALOG, getJetDefinition } from '../entities/jet/jetCatalog';
+import { getJetDefinition } from '../entities/jet/jetCatalog';
 import type { NetClient } from '../net/NetClient';
 import {
   DEFAULT_LOBBY_SETTINGS,
   DOGFIGHT_MAX_PLAYERS,
   DOGFIGHT_MIN_PLAYERS,
+  LOBBY_TEAMS,
   cloneLobbySettings,
   lobbyForcedView,
   lobbyJetId,
+  lobbyTeam,
   lobbyWorldLabel,
   lobbyWorldSpec,
   newLobbySettings,
@@ -14,6 +16,7 @@ import {
   setLobbySeed,
   type Lobby,
   type LobbyMode,
+  type LobbyPlayer,
   type LobbySettings,
   type LobbySummary,
   type LobbyView,
@@ -24,6 +27,7 @@ import type { SettingsStore } from '../settings/Settings';
 import { button, checkbox, h, select, slider, textInput } from './dom';
 import type { MainMenu } from './MainMenu';
 import { dogfightZoneRadius } from '../modes/dogfight/zone';
+import { aircraftContext, aircraftContextError, type LobbyAircraftContext } from './lobbyAircraftSelection';
 
 type Screen = 'connecting' | 'connect' | 'browser' | 'create' | 'room' | 'edit' | null;
 
@@ -79,6 +83,9 @@ export class LobbyMenu {
   /** Mode preselected for lobbies created from this visit (e.g. the main menu's Dogfight entry). */
   private preferredMode: LobbyMode | null = null;
   private savingLobbySettings = false;
+  /** Player whose team popup the host has open in the room (kept across lobby updates). */
+  private teamPickerFor: string | null = null;
+  private aircraftPicker: { context: LobbyAircraftContext; restore(): void } | null = null;
 
   constructor(
     private readonly menu: MainMenu,
@@ -98,6 +105,16 @@ export class LobbyMenu {
         this.settings.set('lobbySettings', cloneLobbySettings(lobby.settings));
         if (this.settings.lastSaveError) this.error = `Lobby updated, but settings could not be remembered: ${this.settings.lastSaveError}.`;
       } else if (!lobby) this.savingLobbySettings = false;
+      if (this.aircraftPicker) {
+        const error = aircraftContextError(this.aircraftPicker.context, lobby);
+        if (error) {
+          this.aircraftPicker = null;
+          this.error = error;
+          if (lobby) this.showRoom();
+          else this.showBrowser();
+        }
+        return;
+      }
       if (lobby && (this.screen === 'browser' || this.screen === 'create' || this.screen === 'connecting' || (this.screen === 'edit' && saved))) this.showRoom();
       else if (!lobby && (this.screen === 'room' || this.screen === 'edit')) this.showBrowser();
       else if (lobby && this.screen === 'room') this.showRoom();
@@ -105,6 +122,13 @@ export class LobbyMenu {
     net.errors.on((message) => {
       this.savingLobbySettings = false;
       this.error = message;
+      if (this.aircraftPicker) {
+        const { restore } = this.aircraftPicker;
+        this.aircraftPicker = null;
+        restore();
+        this.flashError();
+        return;
+      }
       if (this.screen === 'browser') this.showBrowser();
       else if (this.screen === 'room') this.showRoom();
       else if (this.screen === 'create' || this.screen === 'edit') this.flashError();
@@ -127,6 +151,7 @@ export class LobbyMenu {
 
   /** Called when the menu overlay is taken over by something else (game start). */
   deactivate(): void {
+    this.aircraftPicker = null;
     this.screen = null;
     this.stopRefresh();
   }
@@ -150,6 +175,7 @@ export class LobbyMenu {
   }
 
   private setScreen(screen: Screen): void {
+    this.aircraftPicker = null;
     this.screen = screen;
     if (screen !== 'browser') this.stopRefresh();
   }
@@ -266,11 +292,51 @@ export class LobbyMenu {
       }),
       forcedJet
         ? h('p', { class: 'lobby-dim' }, `Jet: ${getJetDefinition(forcedJet).name} (chosen by the host for everyone)`)
-        : select('Jet', JET_CATALOG.map((j) => [j.id, j.name] as [string, string]), () => s.jetId, (v) => {
-            this.settings.set('jetId', v);
-            push();
-          }),
+        : Object.assign(button(`Choose jet: ${getJetDefinition(s.jetId).name}`, () => {
+            this.openAircraftPicker(s.jetId, false, (id) => {
+              const previous = s.jetId;
+              this.settings.set('jetId', id);
+              const error = this.settings.lastSaveError;
+              if (error) {
+                this.settings.set('jetId', previous);
+                return `Could not remember your aircraft: ${error}`;
+              }
+              push();
+              return null;
+            }, () => this.screen === 'room' ? this.showRoom() : this.showBrowser());
+          }), { ariaLabel: 'Choose jet', }),
     );
+  }
+
+  private openAircraftPicker(initialId: string, hostRule: boolean, apply: (id: string) => string | null, after?: () => void): void {
+    const panel = this.menu.currentPanel;
+    if (!panel) return;
+    const context = aircraftContext(this.net.lobby, hostRule);
+    const restore = (): void => {
+      if (after) after();
+      else this.menu.show(panel);
+    };
+    const picker = { context, restore };
+    this.aircraftPicker = picker;
+    this.menu.showJetSelect({
+      initialId,
+      allowPilotsChoice: hostRule,
+      onConfirm: (id) => {
+        if (this.aircraftPicker !== picker || !this.net.connected) return 'Aircraft selection is no longer available.';
+        const error = aircraftContextError(context, this.net.lobby);
+        if (error) return error;
+        const applyError = apply(id);
+        if (applyError) return applyError;
+        this.aircraftPicker = null;
+        restore();
+        return null;
+      },
+      onBack: () => {
+        if (this.aircraftPicker !== picker) return;
+        this.aircraftPicker = null;
+        restore();
+      },
+    });
   }
 
   private showSettingsForm(kind: 'create' | 'edit'): void {
@@ -388,6 +454,18 @@ export class LobbyMenu {
       if (kind === 'create') this.net.createLobby(draft);
       else this.net.updateLobby(draft);
     };
+    const planeRule = button('', () => {
+      this.openAircraftPicker(draft.forceJet, true, (id) => {
+        draft.forceJet = id;
+        drawPlaneRule();
+        return null;
+      });
+    });
+    planeRule.dataset.focusKey = 'lobby-plane-rule';
+    const drawPlaneRule = (): void => {
+      planeRule.textContent = `Plane: ${draft.forceJet ? `${getJetDefinition(draft.forceJet).name} for everyone` : "Pilot's choice"}`;
+    };
+    drawPlaneRule();
 
     this.menu.show(
       h(
@@ -401,7 +479,7 @@ export class LobbyMenu {
         checkbox('Allow joining during a game', () => draft.allowLateJoin, (v) => (draft.allowLateJoin = v)),
         h('h3', {}, 'Rules (same for everyone)'),
         select<LobbyView>('Camera view', VIEW_OPTIONS, () => draft.forceView, (v) => (draft.forceView = v)),
-        select('Plane', [['', "Pilot's choice"], ...JET_CATALOG.map((j) => [j.id, `${j.name} for everyone`] as [string, string])], () => draft.forceJet, (v) => (draft.forceJet = v)),
+        planeRule,
         h('h3', {}, 'World (same for everyone in the lobby)'),
         select<'seeded' | 'classic'>('World', [['seeded', 'Seeded world'], ['classic', 'Classic Canyon']], () => (isClassic() ? 'classic' : 'seeded'), (v) => {
           if (v === 'classic') setLobbyClassic(draft.world);
@@ -446,6 +524,9 @@ export class LobbyMenu {
     const s = lobby.settings;
     const others = lobby.players.filter((p) => p.id !== lobby.hostId);
     const notReady = others.filter((p) => !p.ready);
+    const showTeams = s.mode === 'dogfight';
+    const canPickTeams = showTeams && isHost && lobby.state === 'lobby';
+    if (!canPickTeams || !lobby.players.some((p) => p.id === this.teamPickerFor)) this.teamPickerFor = null;
 
     const playerRows = lobby.players.map((p) =>
       h(
@@ -453,6 +534,7 @@ export class LobbyMenu {
         {},
         h('td', {}, p.id === lobby.hostId ? '★ ' : '', h('b', {}, p.name), p.id === me ? ' (you)' : ''),
         h('td', {}, getJetDefinition(p.jetId).name),
+        showTeams ? h('td', { class: 'lobby-team-cell' }, ...this.teamCell(p, canPickTeams)) : null,
         h('td', { class: p.ready || p.id === lobby.hostId ? 'lobby-ready' : 'lobby-dim' }, p.id === lobby.hostId ? 'Host' : p.inGame ? 'In game' : p.ready ? 'Ready' : 'Not ready'),
         h('td', {}, isHost && p.id !== me ? button('Kick', () => this.net.kick(p.id), 'small') : ''),
       ),
@@ -481,8 +563,7 @@ export class LobbyMenu {
     }
     actions.push(button('Leave lobby', () => this.net.leaveLobby()));
 
-    this.menu.show(
-      h(
+    const panel = h(
         'div',
         { class: 'menu-panel lobby-panel' },
         h('h2', {}, s.name),
@@ -513,15 +594,76 @@ export class LobbyMenu {
         rulesText(s) ? h('p', { class: 'lobby-dim' }, `Host rules: ${rulesText(s)}`) : null,
         status,
         this.takeError(),
-        h('table', { class: 'menu-table' }, h('tr', {}, ...['Pilot', 'Jet', 'Status', ''].map((t) => h('th', {}, t))), ...playerRows),
+        h('table', { class: 'menu-table' }, h('tr', {}, ...['Pilot', 'Jet', ...(showTeams ? ['Team'] : []), 'Status', ''].map((t) => h('th', {}, t))), ...playerRows),
         h('div', { class: 'menu-row' }, ...actions),
         h('h3', {}, 'Your pilot'),
         this.profileFields(),
         h('h3', {}, 'Chat'),
         this.chatLog,
         this.chatInput,
-      ),
     );
+    // Clicking anywhere else in the room closes the team popup.
+    panel.addEventListener('click', (e) => {
+      const target = e.target as Element | null;
+      if (this.teamPickerFor !== null && !target?.closest('.lobby-team-popup, .lobby-team')) this.closeTeamPicker();
+    });
+    this.menu.show(panel);
+    if (this.teamPickerFor !== null) panel.querySelector<HTMLElement>('.lobby-team-popup button')?.focus({ preventScroll: true });
+  }
+
+  /** The team badge of a player; for the host, a button opening a popup with the 3 other teams. */
+  private teamCell(p: LobbyPlayer, canPick: boolean): HTMLElement[] {
+    const team = lobbyTeam(p.team);
+    if (!canPick) return [h('span', { class: 'lobby-team', style: `--team-color: ${team.color}` }, team.name)];
+    const open = this.teamPickerFor === p.id;
+    const badge = h(
+      'button',
+      {
+        type: 'button',
+        class: 'menu-btn small lobby-team',
+        style: `--team-color: ${team.color}`,
+        title: `Change ${p.name}'s team`,
+        onclick: () => {
+          this.teamPickerFor = open ? null : p.id;
+          this.showRoom();
+        },
+      },
+      `${team.name} ▾`,
+    );
+    badge.dataset.focusKey = `team:${p.id}`;
+    badge.setAttribute('aria-haspopup', 'true');
+    badge.setAttribute('aria-expanded', String(open));
+    if (!open) return [badge];
+    const popup = h(
+      'div',
+      { class: 'lobby-team-popup', role: 'dialog', 'aria-label': `Team for ${p.name}` },
+      h('div', { class: 'lobby-dim' }, `Move ${p.name} to:`),
+      ...LOBBY_TEAMS.filter((t) => t.id !== team.id).map((t) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'menu-btn small lobby-team',
+            style: `--team-color: ${t.color}`,
+            onclick: () => {
+              this.net.setTeam(p.id, t.id);
+              this.closeTeamPicker();
+            },
+          },
+          t.name,
+        ),
+      ),
+      button('Cancel', () => this.closeTeamPicker(), 'small'),
+    );
+    return [badge, popup];
+  }
+
+  private closeTeamPicker(): void {
+    const id = this.teamPickerFor;
+    this.teamPickerFor = null;
+    if (this.screen !== 'room') return;
+    this.showRoom();
+    document.querySelector<HTMLElement>(`.menu-root [data-focus-key="team:${id}"]`)?.focus({ preventScroll: true });
   }
 
   private leaveToMain(): void {

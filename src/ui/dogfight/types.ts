@@ -39,7 +39,21 @@ export interface DogfightHudState {
   deathText: string | null;
   /** Short kill/hit notice under the score. */
   feed: string | null;
+  /** Gun crosshair and missile lock box in normalized device coordinates (-1..1); null when hidden. */
+  reticle?: DogfightReticle | null;
   result: DogfightHudResult | null;
+}
+
+export type LockBoxState = 'idle' | 'locking' | 'locked' | 'hit';
+
+export interface DogfightReticle {
+  /** Gun aim point, or null when off screen. */
+  gun: [number, number] | null;
+  /** True briefly after a gun hit (crosshair turns red). */
+  gunHit: boolean;
+  /** The 4 corners of the lock box, or null when off screen. */
+  box: [number, number][] | null;
+  boxState: LockBoxState;
 }
 
 /** What DogfightSession needs from the HUD (DogfightHud implements it). */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { KEY_BINDINGS } from '../src/config/controlsConfig';
 import { KeyBindings, keyLabel } from '../src/input/KeyBindings';
+import { DEFAULT_PAD_BINDINGS, PadBindings } from '../src/input/PadBindings';
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -60,6 +61,35 @@ describe('KeyBindings', () => {
     const kb = new KeyBindings(null);
     kb.set('pause', ['KeyQ']);
     expect(kb.get('pause')).toEqual(['KeyQ']);
+  });
+});
+
+describe('PadBindings', () => {
+  it('rebinding steals the button from another action, persists, and resets to defaults', () => {
+    const storage = memoryStorage();
+    const pb = new PadBindings(storage);
+    expect(pb.get('fireGun')).toBe(DEFAULT_PAD_BINDINGS.fireGun);
+    pb.rebind('fireGun', DEFAULT_PAD_BINDINGS.airbrake);
+    expect(pb.get('fireGun')).toBe(DEFAULT_PAD_BINDINGS.airbrake);
+    expect(pb.get('airbrake')).toBeNull();
+    expect(pb.isCustom('fireGun')).toBe(true);
+    expect(pb.hint('airbrake')).toBeNull();
+    expect(pb.hint('fireGun')).toBe('A');
+    expect(pb.hint('pitchUp')).toBe('left stick ↕');
+
+    const reloaded = new PadBindings(storage);
+    expect(reloaded.get('fireGun')).toBe(0);
+    expect(reloaded.get('airbrake')).toBeNull();
+    reloaded.resetDefaults();
+    expect(reloaded.get('airbrake')).toBe(DEFAULT_PAD_BINDINGS.airbrake);
+    expect(storage.data.has('sfr.padbindings')).toBe(false);
+  });
+
+  it('ignores invalid stored buttons', () => {
+    const pb = new PadBindings(memoryStorage({ 'sfr.padbindings': JSON.stringify({ pause: -3, respawn: 'x', fireGun: 11 }) }));
+    expect(pb.get('pause')).toBe(DEFAULT_PAD_BINDINGS.pause);
+    expect(pb.get('respawn')).toBe(DEFAULT_PAD_BINDINGS.respawn);
+    expect(pb.get('fireGun')).toBe(11);
   });
 });
 

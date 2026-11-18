@@ -8,6 +8,7 @@ import { NavLights } from './NavLights';
 import { DamageModel } from './DamageModel';
 import { buildJetModel, type JetParts } from './JetModel';
 import type { JetDefinition } from './jetCatalog';
+import { FACTORY_APPEARANCE, sameJetAppearance, type JetAppearance } from './jetAppearance';
 import { tryLoadGltfJet } from './gltfJet';
 import { disposeObject3D } from './disposeObject';
 
@@ -61,9 +62,14 @@ export class Jet {
   private gltfModel: Object3D | null = null;
   private disposed = false;
 
-  constructor(readonly definition: JetDefinition, config: FlightConfig, loadGltf = true) {
+  constructor(
+    readonly definition: JetDefinition,
+    config: FlightConfig,
+    loadGltf = true,
+    readonly appearance: JetAppearance = FACTORY_APPEARANCE,
+  ) {
     this.flight = new FlightModel(config);
-    this.parts = buildJetModel(definition.paint, definition.id);
+    this.parts = buildJetModel(definition.paint, definition.id, appearance);
     this.parts.root.traverse((o) => {
       const g = (o as Mesh).geometry;
       if (g && !this.geometries.includes(g)) this.geometries.push(g);
@@ -72,7 +78,8 @@ export class Jet {
     this.heatHaze = new HeatHaze(this.parts.nozzles);
     this.lights = new NavLights(this.parts.navigationLights);
     this.object.add(this.parts.root, this.afterburner.group, this.heatHaze.object, this.lights.group);
-    if (loadGltf) {
+    // Optional third-party models have no paint-slot contract.
+    if (loadGltf && sameJetAppearance(appearance, FACTORY_APPEARANCE)) {
       void tryLoadGltfJet(definition.id, this.parts.root, this.object, this.gltfAbort.signal).then((model) => {
         if (model && this.disposed) disposeObject3D(model);
         else this.gltfModel = model;

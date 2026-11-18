@@ -9,6 +9,7 @@ import {
   type MenuNavAction,
 } from '../src/input/InputManager';
 import { KeyBindings } from '../src/input/KeyBindings';
+import { PadBindings } from '../src/input/PadBindings';
 import { FlightModel } from '../src/physics/FlightModel';
 import { DEFAULT_SETTINGS, type GameSettings } from '../src/settings/Settings';
 
@@ -227,6 +228,72 @@ describe('InputManager focus loss', () => {
     pads = [pad([0, 0], 'standard', [0])];
     input.poll(1 / 60);
     expect(input.isDown('airbrake')).toBe(true);
+  });
+});
+
+describe('InputManager gamepad actions', () => {
+  it('d-pad up / left toggle lights and help, and any button press is reported as activity', () => {
+    const { input } = setup();
+    pads = [pad([0, 0], 'standard')];
+    input.poll(1 / 60);
+    expect(input.gamepadActivity).toBe(false);
+    pads = [pad([0, 0], 'standard', [12, 14])];
+    input.poll(1 / 60);
+    expect(input.consumePressed('toggleLights')).toBe(true);
+    expect(input.consumePressed('toggleHelp')).toBe(true);
+    expect(input.gamepadActivity).toBe(true);
+    pads = [pad([0, 0], 'standard', [12, 14])];
+    input.poll(1 / 60);
+    expect(input.gamepadActivity).toBe(false);
+    expect(input.consumePressed('toggleLights')).toBe(false);
+  });
+
+  it('follows remapped buttons, including held and analog throttle buttons', () => {
+    const padBindings = new PadBindings(null);
+    padBindings.rebind('fireGun', 0); // A: airbrake becomes unbound
+    padBindings.rebind('throttleUp', 5); // RB
+    const input = new InputManager(new KeyBindings(null), { ...DEFAULT_SETTINGS, mouseFlight: false }, {} as HTMLElement, new FakeWindow() as unknown as Window, padBindings);
+    pads = [pad([0, 0], 'standard', [0, 5])];
+    input.poll(1 / 60);
+    expect(input.isDown('fireGun')).toBe(true);
+    expect(input.isDown('airbrake')).toBe(false);
+    expect(input.getFlightControls().throttle).toBe(1);
+    // Non-standard device: a remapped throttle button still works.
+    pads = [pad([0, 0], '', [5])];
+    input.poll(1 / 60);
+    expect(input.getFlightControls().throttle).toBe(1);
+  });
+
+  it('captures the next button press for remapping without navigating the menu', () => {
+    const { input } = setup();
+    const nav: MenuNavAction[] = [];
+    input.onMenuNavigate((a) => nav.push(a));
+    input.setMenuMode(true);
+    pads = [pad([0, 0], 'standard', [0])]; // A still held from choosing "Change"
+    input.poll(1 / 60);
+    const got: number[] = [];
+    input.captureNextPadButton = (b) => got.push(b);
+    input.poll(1 / 60);
+    expect(got).toEqual([]);
+    pads = [pad([0, 0], 'standard', [0, 13])];
+    input.poll(1 / 60);
+    expect(got).toEqual([13]);
+    expect(input.capturing).toBe(false);
+    pads = [pad([0, 0], 'standard')];
+    input.poll(1 / 60);
+    input.poll(1 / 60);
+    expect(nav).toEqual([]);
+  });
+
+  it('Escape cancels a pending button capture', () => {
+    const { input, win } = setup();
+    let cancelled = false;
+    input.captureNextPadButton = () => {};
+    input.padCaptureCancelled = () => (cancelled = true);
+    win.dispatchEvent(key('keydown', 'Escape'));
+    expect(cancelled).toBe(true);
+    expect(input.capturing).toBe(false);
+    expect(input.consumePressed('pause')).toBe(false);
   });
 });
 

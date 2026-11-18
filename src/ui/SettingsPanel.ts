@@ -1,10 +1,14 @@
 import { ACTION_LABELS, KEY_BINDINGS, type InputAction } from '../config/controlsConfig';
 import type { InputManager } from '../input/InputManager';
 import { keyLabel, type KeyBindings } from '../input/KeyBindings';
+import { PAD_ACTIONS, padButtonLabel, type PadAction, type PadBindings } from '../input/PadBindings';
 import type { GameSettings, GraphicsQuality, SettingsStore } from '../settings/Settings';
 import { button, checkbox, h, select, slider } from './dom';
 
 type Tab = 'graphics' | 'audio' | 'controls' | 'world';
+
+/** A controller-only player can't press Esc: an unanswered button capture gives up after this. */
+const PAD_CAPTURE_TIMEOUT_MS = 5000;
 
 /** Settings screen with tabs: graphics, audio, controls (sensitivity + key remapping), world (time, weather). */
 export class SettingsPanel {
@@ -14,6 +18,7 @@ export class SettingsPanel {
     private readonly store: SettingsStore,
     private readonly bindings: KeyBindings,
     private readonly input: InputManager,
+    private readonly padBindings: PadBindings,
   ) {}
 
   /** `lockWorld`: in a multiplayer lobby the world/weather belong to the lobby (its host edits them), so no World tab. */
@@ -38,6 +43,7 @@ export class SettingsPanel {
         h('div', { class: 'menu-row' }, button('Back', onBack, 'primary'), button('Reset all to defaults', () => {
           this.store.reset();
           this.bindings.resetDefaults();
+          this.padBindings.resetDefaults();
           draw();
         })),
       );
@@ -85,6 +91,7 @@ export class SettingsPanel {
           this.throttleSection(),
           h('h3', {}, 'Keyboard'),
           ...(Object.keys(KEY_BINDINGS) as InputAction[]).map((a) => this.keyRow(a, redraw)),
+          this.padSection(),
         );
         break;
       case 'world':
@@ -198,10 +205,70 @@ export class SettingsPanel {
     return section;
   }
 
+  /**
+   * Controller button remapping. Rows update in place (no redraw) so controller focus stays put.
+   * A capture ends on the next button press, Esc, leaving the screen, or after PAD_CAPTURE_TIMEOUT_MS.
+   */
+  private padSection(): HTMLElement {
+    const statuses = new Map<PadAction, HTMLElement>();
+    const show = (a: PadAction): void => {
+      const b = this.padBindings.get(a);
+      statuses.get(a)!.replaceChildren(b === null ? h('span', { class: 'menu-sub' }, 'unbound') : h('kbd', {}, padButtonLabel(b)));
+    };
+    const refresh = (): void => PAD_ACTIONS.forEach(show);
+    const row = (action: PadAction): HTMLElement => {
+      const status = h('span', {});
+      statuses.set(action, status);
+      const change = (): void => {
+        this.input.cancelCapture();
+        status.textContent = 'Press a controller button… (Esc cancels)';
+        const capture = (b: number): void => {
+          clearTimeout(timer);
+          if (status.isConnected) this.padBindings.rebind(action, b);
+        };
+        const timer = setTimeout(() => {
+          if (this.input.captureNextPadButton === capture) this.input.cancelPadCapture();
+        }, PAD_CAPTURE_TIMEOUT_MS);
+        this.input.padCaptureCancelled = () => {
+          clearTimeout(timer);
+          show(action);
+        };
+        this.input.captureNextPadButton = capture;
+      };
+      return h(
+        'div',
+        { class: 'keybind-row' },
+        h('span', {}, ACTION_LABELS[action]),
+        status,
+        h('span', {}, button('Change', change, 'small'), ' ', button('Clear', () => {
+          this.input.cancelCapture();
+          this.padBindings.unbind(action);
+        }, 'small')),
+      );
+    };
+    const section = h(
+      'div',
+      { class: 'menu-col' },
+      h('h3', {}, 'Controller'),
+      h('p', { class: 'menu-sub' }, 'Choose Change, then press the controller button to use. Each button does one thing: taking a button from another action leaves that action unbound. The left stick always flies the jet, and in menus the d-pad / left stick, A and B always navigate.'),
+      ...PAD_ACTIONS.map(row),
+      h('div', { class: 'menu-row' }, button('Reset controller buttons', () => {
+        this.input.cancelCapture();
+        this.padBindings.resetDefaults();
+      }, 'small')),
+    );
+    const off = this.padBindings.onChange(() => {
+      if (!section.isConnected) return off();
+      refresh();
+    });
+    refresh();
+    return section;
+  }
+
   private keyRow(action: InputAction, redraw: () => void): HTMLElement {
     const keys = this.bindings.get(action);
     const capture = (slot: number) => (): void => {
-      this.input.cancelKeyCapture();
+      this.input.cancelCapture();
       const previous = [...status.childNodes];
       status.textContent = 'Press a key…';
       this.input.captureCancelled = () => status.replaceChildren(...previous);

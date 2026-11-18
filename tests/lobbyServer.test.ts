@@ -1,8 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 // @ts-expect-error plain JS module without type declarations
 import { DOGFIGHT_KILLS_TO_WIN, dogfightKiller, isValidWorldKey, sanitizeSettings, startRelay } from '../server/relay.mjs';
 import { DOGFIGHT_RULES } from '../src/combat/types';
+import { FACTORY_APPEARANCE, saveJetAppearance, type JetAppearance } from '../src/entities/jet/jetAppearance';
+import { NetClient } from '../src/net/NetClient';
 import { parseWorldKey } from '../src/world/gen/WorldGenerator';
 
 const PORT = 18787;
@@ -50,6 +52,56 @@ beforeAll(() => {
 afterAll(() => server.close());
 
 describe('lobby server', () => {
+  it('sends the forced plane’s saved look in the first late-join snapshot and updates cosmetics without a leave', async () => {
+    const host = await client('Host');
+    const guest = new NetClient();
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => storage.set(k, v) });
+    vi.stubGlobal('WebSocket', WebSocket);
+    try {
+      const hostLook: JetAppearance = { wrap: 'woodland', raceNumber: '07', canopy: 'amber', finish: 'gloss' };
+      const guestLook: JetAppearance = { wrap: 'splinter', raceNumber: '81', canopy: 'blue', finish: 'matte' };
+      host.send({ type: 'hello', name: 'Host', jetId: 'falcon', appearances: { viper: { ...hostLook, extra: 'discard' } } });
+      host.send({ type: 'createLobby', settings: { mode: 'free', forceJet: 'viper' } });
+      const room = (await host.next('lobby')).lobby;
+      host.send({ type: 'startGame' });
+      await host.next('start');
+      expect(saveJetAppearance('viper', guestLook)).toBe(true);
+      await guest.connect(`ws://localhost:${PORT}`, 'Guest', 'raptor');
+      const start = new Promise((resolve) => guest.started.on((lobby, late) => resolve({ lobby, late })));
+      const joined = vi.fn(), left = vi.fn(), changed = vi.fn();
+      guest.joined.on(joined);
+      guest.left.on(left);
+      guest.modelChanged.on(changed);
+      guest.joinLobby(room.id);
+      expect(await start).toMatchObject({ late: true, lobby: { players: [
+        { jetId: 'viper', appearance: hostLook }, { jetId: 'viper', appearance: guestLook },
+      ] } });
+      expect(joined.mock.calls).toEqual([[{ id: room.hostId, name: 'Host', jetId: 'viper', appearance: hostLook }]]);
+
+      // The late joiner edits the forced plane; the already-flying host sees the change.
+      expect(saveJetAppearance('viper', { ...guestLook, raceNumber: '99' })).toBe(true);
+      let latest: Msg;
+      do latest = (await host.next('lobby')).lobby;
+      while (latest.players[1]?.appearance?.raceNumber !== '99');
+      expect(latest.players[1].appearance).toEqual({ ...guestLook, raceNumber: '99' });
+
+      // A malformed profile isn't forwarded, and the renderer can replace the model without
+      // treating this as a disconnect (especially important for dogfight scoring).
+      const update = new Promise((resolve) => guest.modelChanged.on(resolve));
+      host.send({ type: 'hello', name: 'Host', jetId: 'falcon', appearances: { viper: { ...hostLook, raceNumber: '１' } } });
+      expect(await update).toMatchObject({ jetId: 'viper', appearance: FACTORY_APPEARANCE });
+      expect(guest.lobby!.players[0]).not.toHaveProperty('appearance');
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(left).not.toHaveBeenCalled();
+      expect(joined).toHaveBeenCalledTimes(1);
+    } finally {
+      guest.disconnect();
+      host.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('lists public lobbies, hides private ones, and lets players join by code', async () => {
     const host = await client('Host');
     const guest = await client('Guest');
@@ -120,7 +172,31 @@ describe('lobby server', () => {
     do latest = (await guest.next('lobby')).lobby;
     while (latest.settings.forceJet !== 'viper');
     expect(latest.settings.forceView).toBe('cockpit');
-    expect(latest.players.map((p: Msg) => p.jetId)).toEqual(['viper', 'viper']);
+    host.close();
+    guest.close();
+  });
+
+  it('spreads dogfight pilots over the 4 teams and lets only the host move them', async () => {
+    const host = await client('Host');
+    const guest = await client('Guest');
+    host.send({ type: 'createLobby', settings: { name: 'Teams', mode: 'race' } });
+    const lobby = (await host.next('lobby')).lobby;
+    expect(lobby.players[0].team).toBe('alpha');
+    guest.send({ type: 'joinLobby', lobbyId: lobby.id });
+    const joined = (await guest.next('lobby')).lobby;
+    expect(joined.players.map((p: Msg) => p.team)).toEqual(['alpha', 'beta']);
+    const guestId = joined.players[1].id;
+
+    // Teams only change in a dogfight, only by the host, and only to a real team.
+    host.send({ type: 'setTeam', id: guestId, team: 'gamma' });
+    host.send({ type: 'updateLobby', settings: { ...lobby.settings, mode: 'dogfight' } });
+    guest.send({ type: 'setTeam', id: guestId, team: 'gamma' });
+    host.send({ type: 'setTeam', id: guestId, team: 'omega' });
+    host.send({ type: 'setTeam', id: guestId, team: 'delta' });
+    const updates: Msg[] = [];
+    do updates.push((await guest.next('lobby')).lobby);
+    while (updates.at(-1)!.players[1].team === 'beta');
+    expect(updates.map((l) => `${l.settings.mode}:${l.players[1].team}`)).toEqual(['dogfight:beta', 'dogfight:delta']);
     host.close();
     guest.close();
   });
