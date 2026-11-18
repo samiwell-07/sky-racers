@@ -27,13 +27,18 @@ import {
   CABLE_HIT_RADIUS,
   CABLE_OFFSETS,
   CONIFER_SHAPE,
+  PIER_HALF,
   PYLON_ARM_HALF,
   PYLON_BASE_HALF,
   archOpeningTop,
+  bridgeDeckBand,
+  bridgeSpanOf,
   collideArch,
+  collideBridge,
   collidePowerLine,
   generateCell,
   getFeatures,
+  seededPlacement,
 } from './propsPlacement';
 import type {
   ArchData,
@@ -41,6 +46,7 @@ import type {
   Features,
   ObstacleKind,
   PlacementOptions,
+  PlacementWorld,
   PowerLineData,
   PylonData,
 } from './propsPlacement';
@@ -48,20 +54,38 @@ import { BUILDING_STRIDE, ROCK_STRIDE, TREE_STRIDE, collidePackedCell, packCell 
 import type { PackedCell, PropMeshKind } from './propsPacking';
 import { PROPS_CELL_SIZE } from './propsWorkerProtocol';
 import type { PropsWorkerInit, PropsWorkerRequest, PropsWorkerResult } from './propsWorkerProtocol';
+import type { BridgeSite, WorldSpec } from '../gen/WorldGenerator';
+import { DECK_THICKNESS, PARAPET_HEIGHT } from '../gen/settlements/types';
+import type { BridgeSpan } from '../gen/settlements/types';
 
 export type { ObstacleKind } from './propsPlacement';
 
 export type PropsQuality = 'low' | 'medium' | 'high';
 
+/** The world queries props need (a WorldGenerator satisfies it). */
+export type PropsWorld = PlacementWorld & {
+  heightAt(x: number, z: number): number;
+  /** Lets the worker rebuild the world with createWorld(spec); without it seeded props are generated on the main thread. */
+  readonly spec?: WorldSpec;
+  readonly classicValleyCenterX?: (z: number) => number;
+};
+
 export interface PropsOptions {
   seed: number;
-  /** Ground height. */
+  /** Ground height (for seeded worlds it must be world.heightAt). */
   heightAt: (x: number, z: number) => number;
-  valleyCenterX: (z: number) => number;
-  /** z positions where a power line crosses the valley (pylons on both rims, cables ≥ ~70 m above the floor). */
-  powerLineZ: number[];
-  /** z positions of stone arch bridges spanning the valley (opening ≥ 70 m wide, ≥ 45 m high above the floor). */
-  archZ: number[];
+  /** Classic valley centerline (defaults to world.classicValleyCenterX for the Classic world). */
+  valleyCenterX?: (z: number) => number;
+  /** z positions where a power line crosses the valley (pylons on both rims, cables ≥ ~70 m above the floor). Classic only. */
+  powerLineZ?: number[];
+  /** z positions of stone arch bridges spanning the valley (opening ≥ 70 m wide, ≥ 45 m high above the floor). Classic only. */
+  archZ?: number[];
+  /**
+   * The world. A seeded world (spec.kind !== 'classic') gets settlement-aware props: no trees on
+   * roads, water, streets or the airfield, city buildings and road bridges (with collision).
+   * The Classic world (or none) keeps the Classic valley props exactly.
+   */
+  world?: PropsWorld;
   /** Rectangles kept clear of trees/rocks/buildings (runway etc.). Heading follows Three.js rotation.y; length runs along local Z. */
   clearZones?: Array<{ x: number; z: number; halfWidth: number; halfLength: number; heading: number }>;
   /** Visual quality only (render radius and mesh detail): the collision world is the same at every quality. */
@@ -69,10 +93,15 @@ export interface PropsOptions {
   /** Clock (ms) for the per-frame build budget; tests inject a fake one. Default performance.now. */
   clock?: () => number;
   /**
-   * Generate cells in a Web Worker (default: true when Worker exists). The worker rebuilds the height
-   * function as HeightField(TERRAIN_CONFIG).getHeightAt, so heightAt must match it; pass false otherwise.
+   * Generate cells in a Web Worker (default: true when Worker exists). Classic: the worker rebuilds the
+   * height function as HeightField(TERRAIN_CONFIG).getHeightAt, so heightAt must match it; pass false
+   * otherwise. Seeded: the worker rebuilds the world from world.spec (no worker without a spec).
    */
   useWorker?: boolean;
+}
+
+function seededWorldOf(o: PropsOptions): PropsWorld | null {
+  return o.world && o.world.spec?.kind !== 'classic' ? o.world : null;
 }
 
 const CELL_SIZE = PROPS_CELL_SIZE;
@@ -83,8 +112,8 @@ const RECENTER_DISTANCE = 50;
 /** Generated cells farther than radius + this are dropped from the cache. */
 const CACHE_MARGIN = 3 * CELL_SIZE;
 const FEATURES_PER_UPDATE = 1;
-/** Margin used to also check neighbouring cells for obstacles overlapping a cell border. */
-const COLLISION_REACH = 20;
+/** Margin used to also check neighbouring cells for obstacles overlapping a cell border (building half diagonals reach 25 m). */
+const COLLISION_REACH = 26;
 /** Largest horizontal reach of a cell obstacle past its position (buildings use 25 m). */
 const OBSTACLE_REACH = 32;
 /** Resolution (m) of the per-cell obstacle-top grid used by AI hazard queries. */
@@ -113,6 +142,7 @@ const QUALITY: Record<PropsQuality, { radius: number; lowDetail: boolean }> = {
 };
 
 const UP = new Vector3(0, 1, 0);
+const NO_BRIDGES: readonly BridgeSite[] = [];
 
 interface ColoredPart {
   geometry: BufferGeometry;
@@ -314,6 +344,118 @@ function buildArchGeometry(arch: ArchData): BufferGeometry {
   return geo;
 }
 
+/**
+ * Hexahedra (deck slabs, parapets, piers) written into flat arrays. Corners come in pairs along a
+ * segment a→b: lateral offsets [w0, w1] across it and heights [y0, y1] at each end. Each triangle
+ * is wound to face away from the solid's centroid, so normals are right whatever the corner order.
+ */
+class SlabWriter {
+  private readonly positions: number[] = [];
+  private readonly colors: number[] = [];
+
+  add(
+    ax: number, az: number, bx: number, bz: number, w0: number, w1: number,
+    ya0: number, ya1: number, yb0: number, yb1: number, color: Color,
+  ): void {
+    const len = Math.hypot(bx - ax, bz - az) || 1;
+    const lx = -(bz - az) / len;
+    const lz = (bx - ax) / len;
+    const c: Array<[number, number, number]> = [];
+    for (const [px, pz, y0, y1] of [[ax, az, ya0, ya1], [bx, bz, yb0, yb1]] as const) {
+      for (const w of [w0, w1]) {
+        c.push([px + lx * w, y0, pz + lz * w], [px + lx * w, y1, pz + lz * w]);
+      }
+    }
+    // c index = end * 4 + side * 2 + top.
+    const faces = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [1, 3, 7, 5], [0, 4, 6, 2]];
+    let mx = 0;
+    let my = 0;
+    let mz = 0;
+    for (const p of c) {
+      mx += p[0] / 8;
+      my += p[1] / 8;
+      mz += p[2] / 8;
+    }
+    for (const f of faces) {
+      for (const tri of [[f[0]!, f[1]!, f[2]!], [f[0]!, f[2]!, f[3]!]]) {
+        const p0 = c[tri[0]!]!;
+        const p1 = c[tri[1]!]!;
+        const p2 = c[tri[2]!]!;
+        _u.set(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+        _v.set(p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]);
+        _u.cross(_v);
+        const out = _u.x * ((p0[0] + p1[0] + p2[0]) / 3 - mx) + _u.y * ((p0[1] + p1[1] + p2[1]) / 3 - my) + _u.z * ((p0[2] + p1[2] + p2[2]) / 3 - mz);
+        const order = out >= 0 ? [p0, p1, p2] : [p0, p2, p1];
+        for (const p of order) {
+          this.positions.push(p[0], p[1], p[2]);
+          this.colors.push(color.r, color.g, color.b);
+        }
+      }
+    }
+  }
+
+  build(): BufferGeometry {
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(new Float32Array(this.positions), 3));
+    geo.setAttribute('color', new BufferAttribute(new Float32Array(this.colors), 3));
+    geo.computeVertexNormals();
+    return geo;
+  }
+}
+
+const CONCRETE = new Color('#b3aea4');
+const ASPHALT = new Color('#3b3c3e');
+const PIER_COLOR = new Color('#9f9a90');
+
+/** Road bridge: a concrete slab, asphalt and parapets per deck piece, plus square piers. */
+function buildBridgeGeometry(span: BridgeSpan): BufferGeometry {
+  const w = new SlabWriter();
+  for (const p of span.pieces) {
+    const hw = p.halfWidth;
+    w.add(p.ax, p.az, p.bx, p.bz, -hw - 1, hw + 1, p.ay - DECK_THICKNESS, p.ay - 0.05, p.by - DECK_THICKNESS, p.by - 0.05, CONCRETE);
+    w.add(p.ax, p.az, p.bx, p.bz, -hw, hw, p.ay - 0.05, p.ay + 0.05, p.by - 0.05, p.by + 0.05, ASPHALT);
+    for (const [w0, w1] of [[-hw - 1, -hw - 0.6], [hw + 0.6, hw + 1]] as const) {
+      w.add(p.ax, p.az, p.bx, p.bz, w0, w1, p.ay - 0.05, p.ay + PARAPET_HEIGHT, p.by - 0.05, p.by + PARAPET_HEIGHT, CONCRETE);
+    }
+  }
+  const dx = Math.sin(span.heading) * PIER_HALF;
+  const dz = Math.cos(span.heading) * PIER_HALF;
+  for (const q of span.piers) {
+    w.add(q.x - dx, q.z - dz, q.x + dx, q.z + dz, -PIER_HALF, PIER_HALF, q.bottomY, q.topY, q.bottomY, q.topY, PIER_COLOR);
+  }
+  return w.build();
+}
+
+/** Flat-roofed city buildings: the instance color is the facade, with a grid of dark windows. */
+function createTowerMaterial(): MeshStandardMaterial {
+  const m = new MeshStandardMaterial({ color: '#ffffff', roughness: 0.75, metalness: 0.05 });
+  const decl = '#include <common>\nvarying vec3 vTowerLocal;\nvarying vec3 vTowerNormal;';
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', decl).replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+#ifdef USE_INSTANCING
+  vTowerLocal = position * vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+#else
+  vTowerLocal = position;
+#endif
+  vTowerNormal = normal;`,
+    );
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', decl).replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+  if (abs(vTowerNormal.y) < 0.5) {
+    float h = abs(vTowerNormal.x) > 0.5 ? vTowerLocal.z : vTowerLocal.x;
+    vec2 g = fract(vec2(h / 3.2, vTowerLocal.y / 3.6));
+    float win = step(0.2, g.x) * step(g.x, 0.8) * step(0.3, g.y) * step(g.y, 0.85) * step(4.0, vTowerLocal.y);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.07, 0.1, 0.14), win * 0.8);
+  }`,
+    );
+  };
+  m.customProgramCacheKey = () => 'props-tower-windows-v1';
+  return m;
+}
+
 interface SharedResources {
   conifer: BufferGeometry;
   broadleaf: BufferGeometry;
@@ -332,6 +474,8 @@ interface SharedResources {
   cableMaterial: MeshStandardMaterial;
   markerMaterial: MeshStandardMaterial;
   stoneMaterial: MeshStandardMaterial;
+  towerMaterial: MeshStandardMaterial;
+  concreteMaterial: MeshStandardMaterial;
 }
 
 function createResources(): SharedResources {
@@ -403,6 +547,8 @@ function createResources(): SharedResources {
     cableMaterial: std({ color: '#2b2b2e', roughness: 0.5, metalness: 0.4 }),
     markerMaterial: std({ color: '#ff6a1a', roughness: 0.6 }),
     stoneMaterial: std({ color: '#9a948a', roughness: 0.95, flatShading: true }),
+    towerMaterial: createTowerMaterial(),
+    concreteMaterial: std({ vertexColors: true, roughness: 0.92 }),
   };
 }
 
@@ -456,18 +602,62 @@ export class PropsManager {
   /** Update counter, and the last update in which each cached cell was used by a collision/AI query. */
   private updateCount = 0;
   private readonly touched = new Map<number, number>();
+  /** Seeded world (road bridges, settlements), or null for the Classic valley. */
+  private bridgeWorld: PropsWorld | null;
+  /** Road bridges near the last recenter (streamed like power lines / arches). */
+  private nearBridges: readonly BridgeSite[] = [];
+  private readonly builtBridges = new Map<string, BridgeSpan>();
+  private readonly band: [number, number] = [0, 0];
 
-  constructor(private readonly options: PropsOptions) {
+  constructor(private options: PropsOptions) {
     this.group.name = 'props';
     this.quality = options.quality ?? 'high';
     this.clock = options.clock ?? (() => performance.now());
     this.placement = this.makePlacement();
     this.features = getFeatures(this.placement);
-    if (options.useWorker ?? typeof Worker !== 'undefined') this.startWorker();
+    this.bridgeWorld = seededWorldOf(options);
+    if (this.wantsWorker()) this.startWorker();
   }
 
   get currentQuality(): PropsQuality {
     return this.quality;
+  }
+
+  /**
+   * Switches to another world (or seed / clear zones): drops every cell, feature and cached
+   * obstacle and regenerates around the camera on the next update. quality and clock are kept.
+   */
+  setWorld(options: PropsOptions): void {
+    if (this.disposed) return;
+    for (const key of [...this.cells.keys()]) this.removeCell(key);
+    for (const key of [...this.featureObjects.keys()]) this.removeFeature(key);
+    this.cache.clear();
+    this.touched.clear();
+    this.buildQueue = [];
+    this.buildIndex = 0;
+    this.queued.clear();
+    this.syncQueue = [];
+    this.syncIndex = 0;
+    this.nearBridges = [];
+    this.generation++;
+    this.options = { ...options, quality: this.quality, clock: this.clock };
+    this.placement = this.makePlacement();
+    this.features = getFeatures(this.placement);
+    this.bridgeWorld = seededWorldOf(this.options);
+    if (!this.wantsWorker()) this.stopWorker();
+    else if (this.worker) this.postInit();
+    else this.startWorker();
+    this.centerX = NaN;
+    this.centerZ = NaN;
+    this.dirty = true;
+    this.featuresPending = true;
+  }
+
+  private wantsWorker(): boolean {
+    const o = this.options;
+    if (!(o.useWorker ?? typeof Worker !== 'undefined')) return false;
+    const seeded = seededWorldOf(o);
+    return !seeded || seeded.spec !== undefined;
   }
 
   /** Changes only what is drawn (render radius, mesh detail); the collision world stays identical. */
@@ -533,12 +723,17 @@ export class PropsManager {
       }
     }
     const { powerLines, arches } = this.features;
+    const bridges = this.bridgeWorld
+      ? this.bridgeWorld.bridgesNear((minX + maxX) / 2, (minZ + maxZ) / 2, Math.hypot(maxX - minX, maxZ - minZ) / 2 + 2)
+      : NO_BRIDGES;
     let result: ObstacleKind | null = null;
     for (let k = 0; k < n && !result; k++) {
       const p = points[k]!;
       for (let c = 0; c < near.length && !result; c++) result = collidePackedCell(near[c]!, p.x, p.y, p.z);
       for (let l = 0; l < powerLines.length && !result; l++) if (collidePowerLine(powerLines[l]!, p.x, p.y, p.z)) result = 'powerline';
       for (let a = 0; a < arches.length && !result; a++) if (collideArch(arches[a]!, p.x, p.y, p.z)) result = 'arch';
+      // Road bridges report 'arch' too ("You hit the bridge").
+      for (let b = 0; b < bridges.length && !result; b++) if (collideBridge(bridges[b]!, p.x, p.y, p.z)) result = 'arch';
     }
     near.length = 0;
     return result;
@@ -579,15 +774,31 @@ export class PropsManager {
         if (Math.abs(x - p.x) <= reach && Math.abs(z - p.z) <= reach) top = Math.max(top, p.y + p.height);
       }
     }
+    if (this.bridgeWorld) {
+      const pierReach = radius + PIER_HALF * Math.SQRT2;
+      for (const site of this.bridgeWorld.bridgesNear(x, z, radius + 1)) {
+        for (const p of bridgeSpanOf(site).piers) {
+          if (Math.abs(x - p.x) <= pierReach && Math.abs(z - p.z) <= pierReach) top = Math.max(top, p.topY);
+        }
+      }
+    }
     return top;
   }
 
   /**
-   * Elevated hazards a jet can pass under or over at (x, z) within `radius`: power cables and the
-   * stone of arch bridges. Writes [bottom, top] pairs into `out` and returns the number of bands.
+   * Elevated hazards a jet can pass under or over at (x, z) within `radius`: power cables, the
+   * stone of arch bridges and road bridge decks. Writes [bottom, top] pairs into `out` and returns the number of bands.
    */
   hazardBands(x: number, z: number, radius: number, out: number[]): number {
     let n = 0;
+    if (this.bridgeWorld) {
+      for (const site of this.bridgeWorld.bridgesNear(x, z, radius + 1)) {
+        if (!bridgeDeckBand(site, x, z, radius, this.band)) continue;
+        out[n * 2] = this.band[0];
+        out[n * 2 + 1] = this.band[1];
+        n++;
+      }
+    }
     for (const line of this.features.powerLines) {
       const b = line.bounds;
       if (x < b.minX - radius || x > b.maxX + radius || z < b.minZ - radius || z > b.maxZ + radius) continue;
@@ -650,10 +861,12 @@ export class PropsManager {
   private makePlacement(): PlacementOptions {
     const o = this.options;
     const zones: ClearZone[] | undefined = o.clearZones;
+    const seeded = seededWorldOf(o);
+    if (seeded) return seededPlacement(o.seed, seeded, zones, COLLISION_DENSITY);
     return {
       seed: o.seed,
       heightAt: o.heightAt,
-      valleyCenterX: o.valleyCenterX,
+      valleyCenterX: o.valleyCenterX ?? o.world?.classicValleyCenterX,
       powerLineZ: o.powerLineZ,
       archZ: o.archZ,
       clearZones: zones,
@@ -686,12 +899,14 @@ export class PropsManager {
   private postInit(): void {
     if (!this.worker) return;
     const o = this.options;
+    const seeded = seededWorldOf(o);
     const msg: PropsWorkerInit = {
       type: 'init',
       generation: this.generation,
       seed: o.seed,
-      powerLineZ: [...o.powerLineZ],
-      archZ: [...o.archZ],
+      world: seeded?.spec,
+      powerLineZ: [...(o.powerLineZ ?? [])],
+      archZ: [...(o.archZ ?? [])],
       clearZones: (o.clearZones ?? []).map((z) => ({ x: z.x, z: z.z, halfWidth: z.halfWidth, halfLength: z.halfLength, heading: z.heading })),
       density: COLLISION_DENSITY,
     };
@@ -765,6 +980,7 @@ export class PropsManager {
       this.syncQueue = missingKeys;
     }
     this.syncIndex = 0;
+    this.nearBridges = this.bridgeWorld ? this.bridgeWorld.bridgesNear(cx, cz, radius + 600) : NO_BRIDGES;
     this.featuresPending = true;
   }
 
@@ -830,6 +1046,8 @@ export class PropsManager {
         return r.walls;
       case 'roof':
         return r.roof;
+      case 'tower':
+        return r.walls;
     }
   }
 
@@ -843,6 +1061,7 @@ export class PropsManager {
       ['rock', r.rockMaterial],
       ['walls', r.wallMaterial],
       ['roof', r.roofMaterial],
+      ['tower', r.towerMaterial],
     ];
     for (const [kind, material] of parts) {
       const { matrices, colors } = data.instances[kind];
@@ -886,6 +1105,15 @@ export class PropsManager {
       const d = Math.hypot(arch.x - cx, arch.z - cz);
       featureBudget = this.streamFeature(`a${idx}`, d, radius, featureBudget, () => this.buildArch(arch));
     });
+    for (const site of this.nearBridges) {
+      const span = bridgeSpanOf(site);
+      const key = `b:${span.key}`;
+      const d = Math.max(0, Math.hypot(span.x - cx, span.z - cz) - span.halfSpan);
+      featureBudget = this.streamFeature(key, d, radius, featureBudget, () => this.buildBridge(key, span));
+    }
+    for (const [key, span] of this.builtBridges) {
+      if (Math.hypot(span.x - cx, span.z - cz) - span.halfSpan > radius + 1000) this.removeFeature(key);
+    }
     this.featuresPending = featureBudget < FEATURES_PER_UPDATE;
   }
   private streamFeature(key: string, distance: number, radius: number, budget: number, build: () => BuiltFeature): number {
@@ -910,6 +1138,15 @@ export class PropsManager {
     for (const g of feature.geometries) g.dispose();
     feature.object.removeFromParent();
     this.featureObjects.delete(key);
+    this.builtBridges.delete(key);
+  }
+
+  private buildBridge(key: string, span: BridgeSpan): BuiltFeature {
+    const geo = buildBridgeGeometry(span);
+    const mesh = new Mesh(geo, this.res.concreteMaterial);
+    mesh.name = `bridge-${span.key}`;
+    this.builtBridges.set(key, span);
+    return { object: mesh, geometries: [geo] };
   }
 
   private buildPowerLine(line: PowerLineData): BuiltFeature {

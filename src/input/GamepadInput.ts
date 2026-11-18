@@ -1,3 +1,4 @@
+import { PAD_ACTIONS, type PadAction, type PadBindings } from './PadBindings';
 import { applyDeadZone, applyExpo } from './inputCurves';
 
 export interface AxisSettings {
@@ -12,7 +13,7 @@ export interface AxisSettings {
   throttleMax?: number;
 }
 
-export type GamepadButtonAction = 'toggleCamera' | 'respawn' | 'pause' | 'toggleGear' | 'airbrake';
+export type GamepadButtonAction = Exclude<PadAction, 'throttleUp' | 'throttleDown'>;
 
 export interface GamepadState {
   connected: boolean;
@@ -29,8 +30,15 @@ export interface GamepadState {
   throttleAbsolute: number | null;
   /** Buttons that went down since the previous poll. */
   pressed: Set<GamepadButtonAction>;
+  /** True when any button (mapped or not) went down since the previous poll. */
+  anyPressed: boolean;
+  /** Indices of the buttons that went down since the previous poll (for button remapping). */
+  buttonsPressed: number[];
   /** True while the airbrake button is held. */
   airbrakeHeld: boolean;
+  /** True while the gun / missile buttons are held. */
+  fireGunHeld: boolean;
+  fireMissileHeld: boolean;
   /** Menu navigation: held direction from the d-pad or left stick (-1, 0, 1; +y = down). */
   navX: number;
   navY: number;
@@ -46,18 +54,8 @@ export interface LeverCalibration {
 }
 
 /** Button indices (W3C standard mapping; also used as a best guess for non-standard devices). */
-const BUTTON_ACTIONS: ReadonlyArray<readonly [number, GamepadButtonAction]> = [
-  [0, 'airbrake'],
-  [1, 'toggleGear'],
-  [3, 'toggleCamera'],
-  [8, 'respawn'],
-  [9, 'pause'],
-];
-const AIRBRAKE_BUTTON = 0;
 const CONFIRM_BUTTON = 0;
 const BACK_BUTTON = 1;
-const LT_BUTTON = 6;
-const RT_BUTTON = 7;
 const DPAD_UP = 12;
 const DPAD_DOWN = 13;
 const DPAD_LEFT = 14;
@@ -92,7 +90,11 @@ function disconnected(): GamepadState {
     throttleRaw: null,
     throttleAbsolute: null,
     pressed: new Set(),
+    anyPressed: false,
+    buttonsPressed: [],
     airbrakeHeld: false,
+    fireGunHeld: false,
+    fireMissileHeld: false,
     navX: 0,
     navY: 0,
     confirmHeld: false,
@@ -123,7 +125,10 @@ export class GamepadInput {
   private readonly latched = new Set<number>();
   private latchPending = false;
 
-  constructor(private readonly settings: AxisSettings) {}
+  constructor(
+    private readonly settings: AxisSettings,
+    private readonly bindings: Pick<PadBindings, 'get' | 'isCustom'>,
+  ) {}
 
   /**
    * Forget edge state: buttons held right now count as "up" until they are released, so a button
@@ -148,10 +153,27 @@ export class GamepadInput {
     const roll = shape(axis(pad, 0));
     const pitch = pitchSign * shape(axis(pad, 1));
 
-    let throttleRate = 0;
-    if (pad.mapping === 'standard') {
-      throttleRate = buttonValue(pad, RT_BUTTON) - buttonValue(pad, LT_BUTTON);
+    const raw = pad.buttons.map((_, i) => buttonDown(pad, i));
+    if (this.latchPending) {
+      this.latchPending = false;
+      this.latched.clear();
+      raw.forEach((d, i) => d && this.latched.add(i));
     }
+    for (const i of [...this.latched]) if (!raw[i]) this.latched.delete(i);
+    const now = raw.map((d, i) => d && !this.latched.has(i));
+    const held = (action: PadAction): boolean => {
+      const b = this.bindings.get(action);
+      return b !== null && !!now[b];
+    };
+
+    // Analog throttle buttons (triggers): on non-standard devices (HOTAS) only when the player bound them.
+    const throttleValue = (action: PadAction): number => {
+      const b = this.bindings.get(action);
+      if (b === null || this.latched.has(b)) return 0;
+      if (pad.mapping !== 'standard' && !this.bindings.isCustom(action)) return 0;
+      return buttonValue(pad, b);
+    };
+    const throttleRate = throttleValue('throttleUp') - throttleValue('throttleDown');
     const leverAxis = this.settings.throttleAxis ?? 2;
     const rawValue = pad.axes[leverAxis];
     const throttleRaw = typeof rawValue === 'number' && Number.isFinite(rawValue) ? rawValue : null;
@@ -164,19 +186,14 @@ export class GamepadInput {
             invert: !!this.settings.throttleInvert,
           });
 
-    const raw = pad.buttons.map((_, i) => buttonDown(pad, i));
-    if (this.latchPending) {
-      this.latchPending = false;
-      this.latched.clear();
-      raw.forEach((d, i) => d && this.latched.add(i));
-    }
-    for (const i of [...this.latched]) if (!raw[i]) this.latched.delete(i);
-    const now = raw.map((d, i) => d && !this.latched.has(i));
-
     const prev = this.prevButtons.get(pad.index) ?? [];
+    const buttonsPressed: number[] = [];
+    now.forEach((d, i) => d && !prev[i] && buttonsPressed.push(i));
     const pressed = new Set<GamepadButtonAction>();
-    for (const [index, action] of BUTTON_ACTIONS) {
-      if (now[index] && !prev[index]) pressed.add(action);
+    for (const action of PAD_ACTIONS) {
+      if (action === 'throttleUp' || action === 'throttleDown') continue;
+      const b = this.bindings.get(action);
+      if (b !== null && now[b] && !prev[b]) pressed.add(action);
     }
     this.prevButtons.clear();
     this.prevButtons.set(pad.index, now);
@@ -195,7 +212,11 @@ export class GamepadInput {
       throttleRaw,
       throttleAbsolute,
       pressed,
-      airbrakeHeld: !!now[AIRBRAKE_BUTTON],
+      anyPressed: buttonsPressed.length > 0,
+      buttonsPressed,
+      airbrakeHeld: held('airbrake'),
+      fireGunHeld: held('fireGun'),
+      fireMissileHeld: held('fireMissile'),
       navX: dir(!!now[DPAD_LEFT], !!now[DPAD_RIGHT], lx),
       navY: dir(!!now[DPAD_UP], !!now[DPAD_DOWN], ly),
       confirmHeld: !!now[CONFIRM_BUTTON],

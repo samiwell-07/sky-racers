@@ -1,5 +1,4 @@
 import { Euler, Quaternion, Vector3 } from 'three';
-import type { InputAction } from '../config/controlsConfig';
 import type { Jet } from '../entities/jet/Jet';
 import { GEAR_HEIGHT } from '../entities/jet/JetModel';
 import { resolveCourse } from '../race/Course';
@@ -21,21 +20,6 @@ export interface SpawnPose {
 /** Seconds a failed attempt shows its reason before the lesson restarts. */
 export const LESSON_FAIL_DELAY = 2.5;
 
-/** Controller hints (W3C standard gamepad mapping, see GamepadInput). */
-const PAD_HINTS: Partial<Record<InputAction, string>> = {
-  throttleUp: 'RT',
-  throttleDown: 'LT',
-  pitchUp: 'left stick ↕',
-  pitchDown: 'left stick ↕',
-  rollLeft: 'left stick ↔',
-  rollRight: 'left stick ↔',
-  airbrake: 'A',
-  toggleGear: 'B',
-  respawn: 'Back',
-  pause: 'Start',
-};
-
-export const padHint = (action: InputAction): string | null => PAD_HINTS[action] ?? null;
 
 const _fwd = new Vector3();
 const _right = new Vector3();

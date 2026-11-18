@@ -9,6 +9,7 @@ import { categoryKey, raceWeather, recordCategory, STANDARD_TIME_TRIAL } from '.
 import { compareWithGhost, describeSplit, formatRaceClock, formatSplitMs, splitDeltaMs } from '../src/race/Splits';
 import { DEFAULT_SETTINGS, SettingsStore, type GameSettings } from '../src/settings/Settings';
 import { HeightField } from '../src/world/terrain/HeightField';
+import { newLobbySettings } from '../src/net/lobbyTypes';
 
 vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -65,6 +66,34 @@ describe('record categories', () => {
 });
 
 describe('settings validation and saving', () => {
+  it('remembers the full hosted lobby across reloads without changing solo settings', () => {
+    const storage = new MemoryStorage();
+    const store = new SettingsStore(storage);
+    const lobby = newLobbySettings('Saved lobby', () => 0.5);
+    Object.assign(lobby, { private: true, maxPlayers: 4, mode: 'free', laps: 5, courseId: 'canyon-sprint', raceDifficulty: 'hard', raceLayout: 'sprint', allowLateJoin: false });
+    Object.assign(lobby.world, { timeOfDay: 20, cloudCoverage: 0.8, windSpeed: 12, windDirection: 180, turbulence: 0.2 });
+    store.set('lobbySettings', lobby);
+
+    const reloaded = new SettingsStore(storage);
+    expect(reloaded.values.lobbySettings).toEqual(lobby);
+    expect(reloaded.values.timeOfDay).toBe(DEFAULT_SETTINGS.timeOfDay);
+    expect(reloaded.values.laps).toBe(DEFAULT_SETTINGS.laps);
+    expect(reloaded.loadProblems).toEqual([]);
+    reloaded.values.lobbySettings!.world.timeOfDay = 7;
+    expect(new SettingsStore(storage).values.lobbySettings?.world.timeOfDay).toBe(20);
+  });
+
+  it('ignores malformed saved lobbies while keeping other player settings', () => {
+    const storage = new MemoryStorage();
+    for (const lobbySettings of [{}, { ...newLobbySettings('Bad'), world: null }, { ...newLobbySettings('Bad'), maxPlayers: '4' }]) {
+      storage.data.set('sfr.settings', JSON.stringify({ playerName: 'Ace', lobbySettings }));
+      const store = new SettingsStore(storage);
+      expect(store.values.lobbySettings).toBeNull();
+      expect(store.values.playerName).toBe('Ace');
+      expect(store.loadProblems.some((p) => p.startsWith('lobbySettings:'))).toBe(true);
+    }
+  });
+
   it('recovers from malformed JSON and blocked storage', () => {
     const s = new MemoryStorage();
     s.data.set('sfr.settings', '{not json');

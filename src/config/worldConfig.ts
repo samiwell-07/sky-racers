@@ -110,3 +110,30 @@ export const SPAWN_CONFIG: Readonly<SpawnConfig> = Object.freeze({
   throttle: 0.55,
   respawnDelay: 2.5,
 });
+
+/**
+ * Seeded (infinite, Minecraft-style) worlds: sea level and the scales of the big features. Sizes in
+ * meters; "scale" = wavelength of the noise. Tuned for jets at 150-250 m/s: biomes change every few km.
+ */
+export const SEEDED_TERRAIN = Object.freeze({
+  seaLevel: 0,
+  /** Continents / oceans. */
+  continentScale: 26000,
+  /** Continentalness above which there is land (lower = more land; ~70% land). */
+  landThreshold: -0.17,
+  /** How far river / lake water rises above sea level far inland (m); kept low so rivers barely slope. */
+  inlandRise: 80,
+  /** Plains / hills / mountain regions. */
+  regionScale: 18000,
+  hillScale: 2600,
+  ridgeScale: 4200,
+  /** Highest ridged peaks above the surrounding land (m). */
+  mountainHeight: 1000,
+  /** Distance between the river valleys (~half the scale). */
+  riverScale: 16000,
+  lakeScale: 5200,
+  /** Domain warp that bends coasts and rivers. */
+  warpScale: 9000,
+  warpAmount: 1400,
+  snowLine: 700,
+});

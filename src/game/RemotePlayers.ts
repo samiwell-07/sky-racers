@@ -6,7 +6,7 @@ import { PuppetJet } from './PuppetJet';
 /** Renders the other pilots connected to the multiplayer relay. */
 export class RemotePlayers {
   private readonly jets = new Map<string, PuppetJet>();
-  private readonly snapshot: RemoteSnapshot = { position: new Vector3(), quaternion: new Quaternion(), throttle: 0, afterburner: false };
+  private readonly snapshot: RemoteSnapshot = { position: new Vector3(), quaternion: new Quaternion(), velocity: new Vector3(), throttle: 0, afterburner: false };
   private readonly unsubscribe: Array<() => void> = [];
 
   constructor(private readonly net: NetClient, private readonly parent: Object3D, onMessage: (text: string) => void) {
@@ -14,6 +14,10 @@ export class RemotePlayers {
       net.onJoin((p) => {
         this.add(p);
         onMessage(`${p.name} joined`);
+      }),
+      net.modelChanged.on((p) => {
+        this.remove(p.id);
+        this.add(p);
       }),
       net.onLeave((id) => {
         const name = net.players.get(id)?.name ?? 'A pilot';
@@ -30,7 +34,7 @@ export class RemotePlayers {
   }
 
   private add(p: RemotePlayerInfo): void {
-    if (!this.jets.has(p.id)) this.jets.set(p.id, new PuppetJet(getJetDefinition(p.jetId), this.parent));
+    if (!this.jets.has(p.id)) this.jets.set(p.id, new PuppetJet(getJetDefinition(p.jetId), this.parent, 1, p.appearance));
   }
 
   private remove(id: string): void {

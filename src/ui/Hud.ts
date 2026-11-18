@@ -1,7 +1,10 @@
 import { ACTION_LABELS, type InputAction } from '../config/controlsConfig';
 import { keyLabel, type KeyBindings } from '../input/KeyBindings';
+import type { PadBindings } from '../input/PadBindings';
 import type { GameSettings } from '../settings/Settings';
 import { GateNavigator } from './GateNavigator';
+import type { Quaternion } from 'three';
+import { CockpitPanel } from './CockpitPanel';
 import './hud.css';
 
 export type GamePhase = 'ready' | 'flying' | 'paused' | 'crashed';
@@ -29,6 +32,7 @@ export interface HudData {
   nextRingDistance: number | null;
   flightTime: number;
   cameraMode: string;
+  orientation: Quaternion;
   respawnIn: number;
   health: number;
   gearDown: boolean;
@@ -39,8 +43,10 @@ export interface HudData {
 
 const HELP_ACTIONS: InputAction[] = [
   'pitchDown', 'pitchUp', 'rollLeft', 'rollRight', 'throttleUp', 'throttleDown', 'airbrake', 'toggleGear', 'toggleLights',
-  'toggleCamera', 'respawn', 'pause', 'toggleHelp', 'fullscreen',
+  'toggleCamera', 'respawn', 'pause', 'toggleHelp', 'fullscreen', 'radarZoom', 'fireGun', 'fireMissile', 'releaseFlares',
 ];
+/** Weapons only work in Dogfight mode. */
+const DOGFIGHT_ONLY: ReadonlySet<InputAction> = new Set(['fireGun', 'fireMissile', 'releaseFlares']);
 export const formatTime = (seconds: number): string => {
   const m = Math.floor(seconds / 60);
   const s = seconds - m * 60;
@@ -56,8 +62,15 @@ export class Hud {
   private messageTimer = 0;
   private layout: HudLayout = 'detailed';
   private userScale = 1;
+  private readonly cockpit: CockpitPanel;
+  private radar: HTMLElement | null = null;
+  private inCockpit = false;
 
-  constructor(container: HTMLElement, private readonly bindings: KeyBindings) {
+  constructor(
+    container: HTMLElement,
+    private readonly bindings: KeyBindings,
+    private readonly padBindings: PadBindings,
+  ) {
     this.root = document.createElement('div');
     this.root.className = 'hud';
     this.root.innerHTML = `
@@ -91,18 +104,25 @@ export class Hud {
       </div>
       <div data-el="center" class="hud-center"></div>
       <div data-el="message" class="hud-message"></div>
-      <div class="hud-bottom-right"><span data-el="camera">CHASE</span> · <kbd>H</kbd> help</div>
+      <div class="hud-bottom-right"><span data-el="camera">CHASE</span> · <kbd>H</kbd><span data-el="padHelp"></span> help</div>
       <div data-el="help" class="hud-help hidden">
         <h2>Controls</h2>
         <p>No rudder: bank and pull to turn. Fly low through the gates.</p>
         <table data-el="helpTable"></table>
       </div>`;
     this.root.querySelectorAll<HTMLElement>('[data-el]').forEach((e) => (this.el[e.dataset.el!] = e));
+    this.cockpit = new CockpitPanel(this.root);
     this.nav = new GateNavigator(container);
     this.root.appendChild(this.nav.root);
     container.appendChild(this.root);
     window.addEventListener('resize', () => this.applyScale());
     this.applyScale();
+    const showPadHelp = (): void => {
+      const hint = padBindings.hint('toggleHelp');
+      this.el.padHelp!.innerHTML = hint ? ` / <kbd>${hint}</kbd>` : '';
+    };
+    padBindings.onChange(showPadHelp);
+    showPadHelp();
   }
 
   /** Instrument set and HUD scale (0.75 - 1.5); the scale shrinks automatically when the window is too small. */
@@ -118,6 +138,7 @@ export class Hud {
     const scale = Math.min(this.userScale, Math.max(0.5, fit));
     document.documentElement.style.setProperty('--hud-scale', scale.toFixed(3));
     this.nav.setScale(scale);
+    this.cockpit.setScale(this.userScale);
     // Short windows: wrap the instrument rows into two columns instead of running into the top panels.
     const rowsHeight = (this.layout === 'compact' ? 3 : 8) * 22.5 * scale;
     this.root.classList.toggle('wrap', rowsHeight > window.innerHeight * 0.4);
@@ -127,13 +148,27 @@ export class Hud {
     return !this.el.help!.classList.contains('hidden');
   }
 
-  setHelpVisible(visible: boolean): void {
+  /** With `showPad`, a second column lists the controller buttons. */
+  setHelpVisible(visible: boolean, showPad = false): void {
     if (visible) {
-      this.el.helpTable!.innerHTML = HELP_ACTIONS.map(
-        (a) => `<tr><td>${this.bindings.get(a).map((c) => `<kbd>${keyLabel(c)}</kbd>`).join(' ')}</td><td>${ACTION_LABELS[a]}</td></tr>`,
-      ).join('');
+      this.el.helpTable!.innerHTML = HELP_ACTIONS.map((a) => {
+        const keys = this.bindings.get(a).map((c) => `<kbd>${keyLabel(c)}</kbd>`).join(' ');
+        const hint = this.padBindings.hint(a);
+        const pad = showPad ? `<td>${hint ? `<kbd>${hint}</kbd>` : ''}</td>` : '';
+        return `<tr><td>${keys}</td>${pad}<td>${ACTION_LABELS[a]}${DOGFIGHT_ONLY.has(a) ? ' <small>(dogfight)</small>' : ''}</td></tr>`;
+      }).join('');
     }
     this.el.help!.classList.toggle('hidden', !visible);
+  }
+
+  /** HUD root element (other HUD widgets such as the radar mount inside it). */
+  get element(): HTMLElement {
+    return this.root;
+  }
+
+  mountRadar(radar: HTMLElement): void {
+    this.radar = radar;
+    (this.inCockpit ? this.cockpit.radarMount : this.root).appendChild(radar);
   }
 
   setVisible(visible: boolean): void {
@@ -149,6 +184,13 @@ export class Hud {
 
   update(d: HudData, dt: number): void {
     const e = this.el;
+    const cockpit = d.cameraMode === 'cockpit';
+    if (cockpit !== this.inCockpit) {
+      this.inCockpit = cockpit;
+      this.root.classList.toggle('cockpit', cockpit);
+      if (this.radar) this.mountRadar(this.radar);
+    }
+    if (cockpit) this.cockpit.update(d);
     e.speed!.textContent = Math.round(d.speed * 3.6).toString();
     e.altitude!.textContent = Math.round(d.altitude).toString();
     e.agl!.textContent = Math.max(0, Math.round(d.agl)).toString();

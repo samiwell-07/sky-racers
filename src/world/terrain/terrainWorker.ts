@@ -1,20 +1,23 @@
 /// <reference lib="webworker" />
-import { TERRAIN_CONFIG } from '../../config/worldConfig';
-import { computeChunkArrays } from './chunkMeshData';
-import { createHeightFunction } from './HeightField';
+import { createWorld } from '../gen/createWorld';
+import type { WorldSpec } from '../gen/WorldGenerator';
+import { chunkTransferables, computeChunkArrays } from './chunkMeshData';
 
 export interface ChunkRequest {
   key: string;
   cx: number;
   cz: number;
   lod: number;
+  /** Streamer generation (bumped on every world switch); echoed back so stale results are dropped. */
+  gen: number;
+  /** World to build: rebuilt here from the spec alone (cached per world key). */
+  spec: WorldSpec;
 }
 
-/** Builds terrain chunk vertex data off the main thread. */
-const heightFn = createHeightFunction(TERRAIN_CONFIG);
-
+/** Builds terrain chunk vertex data (ground + water) off the main thread. */
 self.onmessage = (e: MessageEvent<ChunkRequest>) => {
-  const { key, cx, cz, lod } = e.data;
-  const data = computeChunkArrays(cx, cz, lod, TERRAIN_CONFIG, heightFn);
-  (self as unknown as Worker).postMessage({ key, cx, cz, lod, ...data }, [data.positions.buffer, data.normals.buffer, data.uvs.buffer]);
+  const { key, cx, cz, lod, gen, spec } = e.data;
+  const world = createWorld(spec);
+  const data = computeChunkArrays(cx, cz, lod, world.config, world);
+  (self as unknown as Worker).postMessage({ key, cx, cz, lod, gen, ...data }, chunkTransferables(data));
 };

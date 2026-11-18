@@ -1,0 +1,12 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`flares > remote flares decoy our in-flight missile through WeaponSystem.applyRemote (fixed seed) 1`] = `
+[
+  true,
+  true,
+  true,
+  false,
+  true,
+  true,
+]
+`;

@@ -1,11 +1,15 @@
 import { Quaternion, Vector3 } from 'three';
-import type { Lobby, LobbySettings, LobbySummary } from './lobbyTypes';
+import type { CombatMessage, DogfightScore } from '../combat/types';
+import { FACTORY_APPEARANCE, loadJetAppearance, onJetAppearanceSaved, parseJetAppearance, sameJetAppearance, type JetAppearance } from '../entities/jet/jetAppearance';
+import { JET_CATALOG } from '../entities/jet/jetCatalog';
+import type { Lobby, LobbySettings, LobbySummary, LobbyTeam } from './lobbyTypes';
 import { SnapshotBuffer, type Snapshot } from './SnapshotBuffer';
 
 export interface RemotePlayerInfo {
   id: string;
   name: string;
   jetId: string;
+  appearance: JetAppearance;
 }
 
 export interface LocalNetState {
@@ -21,6 +25,8 @@ export interface LocalNetState {
 export interface RemoteSnapshot {
   position: Vector3;
   quaternion: Quaternion;
+  /** Interpolated world velocity (m/s). */
+  velocity: Vector3;
   throttle: number;
   afterburner: boolean;
 }
@@ -60,9 +66,12 @@ export class NetClient {
   private readonly buffers = new Map<string, SnapshotBuffer>();
   private readonly progress = new Map<string, RemoteProgress>();
   private lastSendTime = -Infinity;
-  private readonly scratch: Snapshot = { time: 0, position: [0, 0, 0], quaternion: [0, 0, 0, 1], throttle: 0, afterburner: false };
+  private profile: { name: string; jetId: string } | null = null;
+  private unsubscribeAppearance?: () => void;
+  private readonly scratch: Snapshot = { time: 0, position: [0, 0, 0], quaternion: [0, 0, 0, 1], velocity: [0, 0, 0], throttle: 0, afterburner: false };
 
   readonly joined = new Signal<[RemotePlayerInfo]>();
+  readonly modelChanged = new Signal<[RemotePlayerInfo]>();
   readonly left = new Signal<[string]>();
   readonly events = new Signal<[string, string, unknown]>();
   /** Lobby changed (null = not in a lobby). */
@@ -73,7 +82,16 @@ export class NetClient {
   readonly errors = new Signal<[string]>();
   readonly chat = new Signal<[string, string]>();
   readonly disconnected = new Signal<[]>();
+  /** Combat message relayed from another player of the lobby (dogfight). */
+  readonly combat = new Signal<[fromId: string, msg: CombatMessage]>();
+  /** Server dogfight score: after the start (all zero), after each kill, and when the game ends (winnerId). */
+  readonly dogfightScore = new Signal<[DogfightScore]>();
+  private latestScore: DogfightScore | null = null;
 
+  /** Last dogfight score received since the current game started (null before the first one). */
+  get lastDogfightScore(): DogfightScore | null {
+    return this.latestScore;
+  }
   get id(): string | null {
     return this.selfId;
   }
@@ -125,7 +143,10 @@ export class NetClient {
         return;
       }
       this.ws = ws;
-      ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', name, jetId }));
+      ws.onopen = () => {
+        this.setProfile(name, jetId);
+        this.unsubscribeAppearance = onJetAppearanceSaved(() => this.sendProfile());
+      };
       ws.onerror = () => fail(`Could not reach ${url}`);
       ws.onclose = () => {
         clearTimeout(timer);
@@ -167,7 +188,15 @@ export class NetClient {
 
   /** Update name / jet shown to others. */
   setProfile(name: string, jetId: string): void {
-    this.send({ type: 'hello', name, jetId });
+    this.profile = { name, jetId };
+    this.sendProfile();
+  }
+
+  private sendProfile(): void {
+    if (!this.profile) return;
+    // Send all five once per profile edit so switching a host rule needs no round-trip.
+    const appearances = Object.fromEntries(JET_CATALOG.map(({ id }) => [id, loadJetAppearance(id)]));
+    this.send({ type: 'hello', ...this.profile, appearances });
   }
 
   listLobbies(): void {
@@ -201,6 +230,10 @@ export class NetClient {
   kick(id: string): void {
     this.send({ type: 'kick', id });
   }
+  /** Host only: moves a player to another team. */
+  setTeam(id: string, team: LobbyTeam): void {
+    this.send({ type: 'setTeam', id, team });
+  }
   sendChat(text: string): void {
     this.send({ type: 'chat', text });
   }
@@ -225,14 +258,26 @@ export class NetClient {
     if (this.connected && this.currentLobby) this.send({ type: 'event', event, data: data ?? null });
   }
 
-  getRemoteSnapshot(id: string, now: number, out?: RemoteSnapshot): RemoteSnapshot | null {
+  /** Sends a combat message to the other players right away (not throttled like state). */
+  sendCombat(msg: CombatMessage): void {
+    if (this.connected && this.currentLobby) this.send({ type: 'combat', msg });
+  }
+
+  /**
+   * Interpolated state of a remote player. `out` is reused when given; a missing `velocity` vector is
+   * created on it once (older callers pass objects without one).
+   */
+  getRemoteSnapshot(id: string, now: number, out?: Omit<RemoteSnapshot, 'velocity'> & { velocity?: Vector3 }): RemoteSnapshot | null {
     const buf = this.buffers.get(id);
     if (!buf) return null;
     const s = buf.sample(now, this.scratch);
     if (!s) return null;
-    const result = out ?? { position: new Vector3(), quaternion: new Quaternion(), throttle: 0, afterburner: false };
+    const target = out ?? { position: new Vector3(), quaternion: new Quaternion(), throttle: 0, afterburner: false };
+    target.velocity ??= new Vector3();
+    const result = target as RemoteSnapshot;
     result.position.fromArray(s.position);
     result.quaternion.fromArray(s.quaternion);
+    result.velocity.fromArray(s.velocity);
     result.throttle = s.throttle;
     result.afterburner = s.afterburner;
     return result;
@@ -253,17 +298,23 @@ export class NetClient {
   }
 
   private reset(): void {
+    this.unsubscribeAppearance?.();
+    this.unsubscribeAppearance = undefined;
+    this.profile = null;
     this.ws = null;
     this.selfId = null;
     this.setLobby(null);
     this.lastSendTime = -Infinity;
+    this.latestScore = null;
   }
 
   /** Applies a lobby update, firing join/leave for players that appeared or went away. */
   private setLobby(lobby: Lobby | null): void {
     this.currentLobby = lobby;
     const next = new Map<string, RemotePlayerInfo>();
-    for (const p of lobby?.players ?? []) if (p.id !== this.selfId) next.set(p.id, { id: p.id, name: p.name, jetId: p.jetId });
+    for (const p of lobby?.players ?? []) {
+      if (p.id !== this.selfId) next.set(p.id, { id: p.id, name: p.name, jetId: p.jetId, appearance: parseJetAppearance(p.appearance) ?? FACTORY_APPEARANCE });
+    }
     for (const id of [...this.playerMap.keys()]) {
       if (!next.has(id)) {
         this.playerMap.delete(id);
@@ -274,9 +325,11 @@ export class NetClient {
     }
     for (const [id, info] of next) {
       const old = this.playerMap.get(id);
-      if (old && old.jetId === info.jetId && old.name === info.name) continue;
-      if (old) this.left.emit(id); // jet or name changed: recreate
       this.playerMap.set(id, info);
+      if (old) {
+        if (old.jetId !== info.jetId || !sameJetAppearance(old.appearance, info.appearance)) this.modelChanged.emit(info);
+        continue;
+      }
       if (!this.buffers.has(id)) this.buffers.set(id, new SnapshotBuffer());
       this.joined.emit(info);
     }
@@ -294,6 +347,7 @@ export class NetClient {
         break;
       case 'start':
         this.currentLobby = msg.lobby as Lobby;
+        this.latestScore = null;
         this.resetProgress();
         this.started.emit(this.currentLobby, msg.late === true);
         break;
@@ -308,10 +362,12 @@ export class NetClient {
         const p = msg.p as number[] | undefined;
         const q = msg.q as number[] | undefined;
         if (!buf || !Array.isArray(p) || !Array.isArray(q) || p.length !== 3 || q.length !== 4) break;
+        const v = Array.isArray(msg.v) && msg.v.length === 3 ? (msg.v as number[]) : [0, 0, 0];
         buf.push({
           time: performance.now(),
           position: [p[0]!, p[1]!, p[2]!],
           quaternion: [q[0]!, q[1]!, q[2]!, q[3]!],
+          velocity: [v[0]!, v[1]!, v[2]!],
           throttle: typeof msg.thr === 'number' ? msg.thr : 0,
           afterburner: msg.ab === true,
         });
@@ -329,6 +385,17 @@ export class NetClient {
         }
         this.events.emit(id, String(msg.event), msg.data);
         break;
+      case 'combat': {
+        const m = msg.msg as CombatMessage | undefined;
+        if (id && m && typeof m === 'object' && typeof m.t === 'string') this.combat.emit(id, m);
+        break;
+      }
+      case 'dogfightScore': {
+        const kills = msg.kills && typeof msg.kills === 'object' ? (msg.kills as Record<string, number>) : {};
+        this.latestScore = { kills: { ...kills }, winnerId: typeof msg.winnerId === 'string' ? msg.winnerId : null };
+        this.dogfightScore.emit(this.latestScore);
+        break;
+      }
     }
   }
 }

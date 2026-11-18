@@ -11,6 +11,7 @@ import type { Weather, WeatherSettings } from '../world/environment/Weather';
 import type { HeightField } from '../world/terrain/HeightField';
 import { AIRacer } from './AIRacer';
 import { PuppetJet } from './PuppetJet';
+import type { Jet } from '../entities/jet/Jet';
 
 const COUNTDOWN = 3;
 const AI_NAMES = ['Maverick', 'Viper', 'Iceman', 'Goose', 'Phoenix', 'Hangman', 'Rooster'];
@@ -132,6 +133,11 @@ export class RaceSession {
 
   get frozen(): boolean {
     return this.state === 'countdown';
+  }
+
+  /** The visible ghost jet, if any (radar). */
+  get ghost(): Jet | null {
+    return this.ghostJet?.jet.object.visible ? this.ghostJet.jet : null;
   }
 
   /** Advances countdown / race clock. Returns the countdown beep to play (3, 2, 1, 0 = GO) if any. */

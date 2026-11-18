@@ -13,7 +13,7 @@ export interface NavTarget {
 }
 
 /** HUD elements the indicator must never cover (only visible ones count). */
-const OBSTACLES = '.hud-instruments, .hud-top, .hud-warn, .hud-center, .hud-message.visible, .hud-bottom-right, .hud-help, .race-panel, .race-center';
+const OBSTACLES = '.hud-instruments, .hud-top, .hud-warn, .hud-center, .hud-message.visible, .hud-bottom-right, .hud-help, .race-panel, .race-center, .hud-radar, .df-score, .df-weapons';
 
 const ICONS = {
   onscreen: '<svg viewBox="0 0 24 24"><path d="M2 8V2h6M16 2h6v6M22 16v6h-6M8 22H2v-6"/></svg>',

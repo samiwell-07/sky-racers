@@ -1,4 +1,5 @@
 import { AdditiveBlending, CanvasTexture, Color, Group, Sprite, SpriteMaterial, type Texture } from 'three';
+import type { JetParts } from './JetModel';
 
 let glowTexture: Texture | null = null;
 function getGlowTexture(): Texture | null {
@@ -38,7 +39,7 @@ export class NavLights {
   private readonly lamps: Lamp[] = [];
   on = true;
 
-  constructor() {
+  constructor(layout: JetParts['navigationLights']) {
     const add = (x: number, y: number, z: number, color: string, blink: Blink, size: number, phase = 0): void => {
       const sprite = new Sprite(
         new SpriteMaterial({ map: getGlowTexture(), color: new Color(color), blending: AdditiveBlending, depthWrite: false, fog: false, transparent: true }),
@@ -48,12 +49,11 @@ export class NavLights {
       this.group.add(sprite);
       this.lamps.push({ sprite, blink, size, phase });
     };
-    add(-6.75, 0.05, 4.1, '#ff2a2a', 'steady', 1.6); // left nav (red)
-    add(6.75, 0.05, 4.1, '#2aff5a', 'steady', 1.6); // right nav (green)
-    add(-2.25, 3.75, 7.6, '#ffffff', 'steady', 1.1); // tail lights
-    add(2.25, 3.75, 7.6, '#ffffff', 'steady', 1.1);
-    add(-6.75, 0.05, 4.4, '#ffffff', 'strobe', 4.5); // wingtip strobes
-    add(6.75, 0.05, 4.4, '#ffffff', 'strobe', 4.5, 0.05);
+    for (const wing of layout.wings) {
+      add(wing.x, wing.y, wing.z, wing.x < 0 ? '#ff2a2a' : '#2aff5a', 'steady', 1.6);
+      add(wing.x, wing.y, wing.z, '#ffffff', 'strobe', 4.5, wing.x < 0 ? 0 : 0.05);
+    }
+    for (const tail of layout.tails) add(tail.x, tail.y, tail.z, '#ffffff', 'steady', 1.1);
     add(0, -0.95, 0.5, '#ff3020', 'beacon', 2.6); // belly beacon
     add(0, 1.15, 1.5, '#ff3020', 'beacon', 2.2, 0.5); // spine beacon
     add(0, -0.35, -9.9, '#ffffff', 'beacon', 0.9, 0.25); // nose LED

@@ -81,6 +81,10 @@ export interface TerrainTextureSet {
   rock: Texture;
   dirt: Texture;
   snow: Texture;
+  /** Beaches (the terrain's `surface` attribute, y). */
+  sand: Texture;
+  /** Roads, city streets and the airfield (the terrain's `surface` attribute, x). */
+  asphalt: Texture;
   normal: Texture;
 }
 
@@ -90,6 +94,8 @@ export function createTerrainTextures(anisotropy: number, size = 512): TerrainTe
   const rock = colorTexture(size, 23, [[4, 0.35], [16, 0.3], [64, 0.2], [256, 0.15]], [92, 86, 80], [176, 168, 156], 2.2, anisotropy);
   const dirt = colorTexture(size, 37, [[8, 0.3], [32, 0.3], [128, 0.4]], [110, 90, 62], [170, 146, 108], 1.6, anisotropy, 0.08);
   const snow = colorTexture(size, 41, [[4, 0.4], [32, 0.4], [128, 0.2]], [210, 218, 230], [250, 252, 255], 1.2, anisotropy);
+  const sand = colorTexture(size, 59, [[8, 0.3], [64, 0.3], [256, 0.4]], [186, 168, 128], [226, 210, 168], 1.4, anisotropy, 0.03);
+  const asphalt = colorTexture(size, 67, [[16, 0.25], [128, 0.35], [512, 0.4]], [52, 53, 56], [86, 87, 90], 1.5, anisotropy, 0.06);
 
   // Normal map from a bumpy height field (tileable, central differences with wrap).
   const h = fractal(size, 53, [[16, 0.3], [64, 0.35], [256, 0.35]]);
@@ -107,5 +113,5 @@ export function createTerrainTextures(anisotropy: number, size = 512): TerrainTe
     d[i * 4 + 3] = 255;
   }, false, anisotropy);
 
-  return { grass, rock, dirt, snow, normal };
+  return { grass, rock, dirt, snow, sand, asphalt, normal };
 }

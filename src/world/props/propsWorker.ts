@@ -1,6 +1,7 @@
 import { TERRAIN_CONFIG } from '../../config/worldConfig';
 import { HeightField, valleyCenterX } from '../terrain/HeightField';
-import { generateCell } from './propsPlacement';
+import { generateCell, seededPlacement } from './propsPlacement';
+import { createWorld } from '../gen/createWorld';
 import type { PlacementOptions } from './propsPlacement';
 import { packCell, packedCellTransferables } from './propsPacking';
 import { PROPS_CELL_SIZE } from './propsWorkerProtocol';
@@ -9,6 +10,7 @@ import type { PropsWorkerMessage, PropsWorkerResult } from './propsWorkerProtoco
 /**
  * Generates prop cells off the main thread. The height function is rebuilt here: the game's
  * PropsOptions.heightAt is HeightField(TERRAIN_CONFIG).getHeightAt, so the result is identical.
+ * Seeded worlds are rebuilt from their WorldSpec with createWorld() (deterministic per spec).
  */
 
 const heightField = new HeightField(TERRAIN_CONFIG);
@@ -26,15 +28,18 @@ self.onmessage = (e: MessageEvent<PropsWorkerMessage>): void => {
   const msg = e.data;
   if (msg.type === 'init') {
     generation = msg.generation;
-    placement = {
-      seed: msg.seed,
-      heightAt,
-      valleyCenterX,
-      powerLineZ: msg.powerLineZ,
-      archZ: msg.archZ,
-      clearZones: msg.clearZones,
-      density: msg.density,
-    };
+    placement =
+      msg.world && msg.world.kind === 'seeded'
+        ? seededPlacement(msg.seed, createWorld(msg.world), msg.clearZones, msg.density)
+        : {
+            seed: msg.seed,
+            heightAt,
+            valleyCenterX,
+            powerLineZ: msg.powerLineZ,
+            archZ: msg.archZ,
+            clearZones: msg.clearZones,
+            density: msg.density,
+          };
     queue = [];
     next = 0;
     return;

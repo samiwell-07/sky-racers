@@ -1,11 +1,31 @@
 import type { TerrainConfig } from '../../config/worldConfig';
+import type { SurfaceSample, WorldGenerator } from '../gen/WorldGenerator';
+import { computeWaterArrays, type WaterArrays } from '../water/waterArrays';
 
 export interface ChunkArrays {
   positions: Float32Array;
   normals: Float32Array;
   uvs: Float32Array;
+  /** vec2 per vertex: (paved, sand) amounts for the terrain splat (zeros for a bare height function). */
+  surface: Float32Array;
+  /** Water surface mesh data of the chunk (null without water). */
+  water: WaterArrays | null;
   minY: number;
   maxY: number;
+}
+
+/** A world, or just a height function (tests/tools: no surface data, no water). */
+export type ChunkSource = WorldGenerator | ((x: number, z: number) => number);
+
+/** Typed arrays of a chunk to hand over in postMessage. */
+export function chunkTransferables(data: ChunkArrays): ArrayBuffer[] {
+  const list = [data.positions.buffer, data.normals.buffer, data.uvs.buffer, data.surface.buffer] as ArrayBuffer[];
+  const w = data.water;
+  if (w) {
+    list.push(w.positions.buffer as ArrayBuffer, w.uvs.buffer as ArrayBuffer, w.indices.buffer as ArrayBuffer);
+    if (w.colors) list.push(w.colors.buffer as ArrayBuffer);
+  }
+  return list;
 }
 
 /**
@@ -19,8 +39,10 @@ export function computeChunkArrays(
   cz: number,
   lod: number,
   cfg: TerrainConfig,
-  heightFn: (x: number, z: number) => number,
+  source: ChunkSource,
 ): ChunkArrays {
+  const world = typeof source === 'function' ? null : source;
+  const heightFn = world ? (x: number, z: number): number => world.heightAt(x, z) : (source as (x: number, z: number) => number);
   const cellSize = cfg.chunkSize / cfg.chunkSegments;
   const step = 1 << lod;
   const segs = cfg.chunkSegments / step;
@@ -28,6 +50,16 @@ export function computeChunkArrays(
   const cell = cellSize * step;
   const baseI = cx * cfg.chunkSegments;
   const baseJ = cz * cfg.chunkSegments;
+
+  const skirtDepth = 6 + lod * 14;
+  const borderCount = segs * 4;
+  const vertCount = n * n + borderCount;
+  const positions = new Float32Array(vertCount * 3);
+  const normals = new Float32Array(vertCount * 3);
+  const uvs = new Float32Array(vertCount * 2);
+  const surface = new Float32Array(vertCount * 2);
+  const uvScale = 1 / cfg.detailTextureScale;
+  const sample: SurfaceSample = { paved: 0, sand: 0 };
 
   // Heights with a one-vertex border ring for the normals.
   const m = n + 2;
@@ -37,22 +69,22 @@ export function computeChunkArrays(
   for (let j = 0; j < m; j++) {
     const z = (baseJ + (j - 1) * step) * cellSize;
     for (let i = 0; i < m; i++) {
-      const v = heightFn((baseI + (i - 1) * step) * cellSize, z);
+      const x = (baseI + (i - 1) * step) * cellSize;
+      const v = heightFn(x, z);
       h[j * m + i] = v;
       if (i > 0 && i < m - 1 && j > 0 && j < m - 1) {
         if (v < minY) minY = v;
         if (v > maxY) maxY = v;
+        // Right after heightAt at the same point: seeded worlds reuse their memoized sample.
+        if (world) {
+          world.surfaceAt(x, z, sample);
+          const s = ((j - 1) * n + (i - 1)) * 2;
+          surface[s] = sample.paved;
+          surface[s + 1] = sample.sand;
+        }
       }
     }
   }
-
-  const skirtDepth = 6 + lod * 14;
-  const borderCount = segs * 4;
-  const vertCount = n * n + borderCount;
-  const positions = new Float32Array(vertCount * 3);
-  const normals = new Float32Array(vertCount * 3);
-  const uvs = new Float32Array(vertCount * 2);
-  const uvScale = 1 / cfg.detailTextureScale;
 
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
@@ -88,8 +120,11 @@ export function computeChunkArrays(
     normals[dst * 3 + 2] = normals[src * 3 + 2]!;
     uvs[dst * 2] = uvs[src * 2]!;
     uvs[dst * 2 + 1] = uvs[src * 2 + 1]!;
+    surface[dst * 2] = surface[src * 2]!;
+    surface[dst * 2 + 1] = surface[src * 2 + 1]!;
   }
-  return { positions, normals, uvs, minY: minY - skirtDepth, maxY };
+  const water = world ? computeWaterArrays(cx, cz, lod, cfg, world) : null;
+  return { positions, normals, uvs, surface, water, minY: minY - skirtDepth, maxY };
 }
 
 /** Border vertices, counter-clockwise seen from above. */

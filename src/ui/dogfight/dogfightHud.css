@@ -1,0 +1,326 @@
+/* Dogfight combat HUD. Positions avoid the radar (bottom right, 200 px), the instruments (bottom
+   left), the top-centre bar and the centre warnings (30–45 %). */
+
+.df-hud .df-score {
+  top: 12px;
+  right: 16px;
+  min-width: 190px;
+  text-align: right;
+  font-size: 15px;
+  zoom: var(--hud-scale, 1);
+}
+
+.df-score-line {
+  white-space: nowrap;
+  color: #fff;
+}
+
+.df-board {
+  display: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.df-hud.ffa .df-score-line {
+  display: none;
+}
+
+.df-hud.ffa .df-board {
+  display: block;
+}
+
+.df-board li {
+  white-space: nowrap;
+}
+
+.df-board li b {
+  display: inline-block;
+  min-width: 26px;
+  font-size: 18px;
+  color: #ff7a6b;
+}
+
+.df-board li.self b {
+  color: #7dffa8;
+}
+
+.df-board li.left {
+  opacity: 0.45;
+}
+
+.df-score-line b {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.df-score-line .df-mine {
+  color: #7dffa8;
+}
+
+.df-score-line .df-theirs {
+  color: #ff7a6b;
+}
+
+.df-dash {
+  margin: 0 6px;
+  opacity: 0.7;
+}
+
+.df-goal {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.df-feed {
+  min-height: 1.2em;
+  margin-top: 2px;
+  font-size: 14px;
+  color: #ffd27a;
+}
+
+/* Right side, just above the radar (radar: bottom 40px + 200px). */
+.df-hud .df-weapons {
+  right: 16px;
+  bottom: 256px;
+  width: 200px;
+  box-sizing: border-box;
+  font-size: 14px;
+  zoom: var(--hud-scale, 1);
+}
+
+.df-weapons.off {
+  opacity: 0.35;
+}
+
+.df-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+}
+
+.df-label {
+  width: 30px;
+  opacity: 0.75;
+}
+
+.df-row b {
+  min-width: 22px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.df-bar {
+  position: relative;
+  flex: 1;
+  height: 7px;
+  border: 1px solid rgba(184, 255, 207, 0.5);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.df-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #b8ffcf;
+}
+
+.df-bar-fill.hot {
+  background: #ff8a3d;
+}
+
+.df-lockbar .df-bar-fill {
+  background: #ffd27a;
+}
+
+.df-overheat {
+  visibility: hidden;
+  font-size: 11px;
+  font-weight: bold;
+  color: #ff5a3d;
+  animation: df-blink 0.4s steps(2) infinite;
+}
+
+.df-overheat.visible {
+  visibility: visible;
+}
+
+.df-lock {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.df-lock.search {
+  opacity: 0.6;
+}
+
+.df-lock.locking {
+  color: #ffd27a;
+  animation: df-blink 0.3s steps(2) infinite;
+}
+
+.df-lock.locked {
+  color: #ff4d4d;
+  font-weight: bold;
+}
+
+.df-lock.empty {
+  opacity: 0.4;
+}
+
+.df-missile-warn {
+  display: none;
+  margin-bottom: 6px;
+  padding: 2px 0;
+  border: 2px solid #ff3b3b;
+  color: #ff3b3b;
+  font-weight: bold;
+  letter-spacing: 3px;
+  text-align: center;
+  animation: df-blink 0.25s steps(2) infinite;
+}
+
+.df-missile-warn.visible {
+  display: block;
+}
+
+/* Red edge pulse while a missile is tracking us. */
+.df-hud.incoming::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 90px rgba(255, 30, 30, 0.45);
+  animation: df-blink 0.5s steps(2) infinite;
+}
+
+/* Below the centre warnings (pull up / stall) and the centre text. */
+.df-center {
+  position: absolute;
+  top: 56%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  text-align: center;
+  color: #fff;
+  zoom: var(--hud-scale, 1);
+}
+
+.df-center.countdown,
+.df-center.dead,
+.df-center.zone {
+  display: block;
+}
+
+.df-center-title {
+  font-size: 20px;
+  font-weight: bold;
+  letter-spacing: 2px;
+}
+
+.df-center-big {
+  font-size: 64px;
+  line-height: 1.05;
+  font-weight: bold;
+  font-variant-numeric: tabular-nums;
+}
+
+.df-center-sub {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.df-center.zone {
+  color: #ff5a3d;
+}
+
+.df-center.zone .df-center-title {
+  animation: df-blink 0.5s steps(2) infinite;
+}
+
+.df-center.dead {
+  color: #ffd27a;
+}
+
+.df-results {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.df-results.visible {
+  display: flex;
+}
+
+.df-results-panel {
+  min-width: 320px;
+  padding: 22px 30px;
+  border: 1px solid rgba(184, 255, 207, 0.35);
+  border-radius: 8px;
+  background: rgba(0, 20, 10, 0.85);
+  text-align: center;
+  zoom: var(--hud-scale, 1);
+}
+
+.df-results-title {
+  font-size: 44px;
+  font-weight: bold;
+  letter-spacing: 6px;
+  color: #7dffa8;
+}
+
+.df-results[data-result='defeat'] .df-results-title {
+  color: #ff6b5b;
+}
+
+.df-results-score {
+  margin: 8px 0 4px;
+  font-size: 22px;
+  color: #fff;
+  white-space: pre-line;
+}
+
+.df-results-note {
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
+
+@keyframes df-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* Gun crosshair and missile lock box (drawn in NDC: viewBox -1..1, stretched to the screen). */
+.df-hud .df-reticle {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.df-reticle .df-gun,
+.df-reticle .df-lockbox {
+  fill: none;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+}
+.df-reticle .df-gun { stroke: #fff; }
+.df-reticle .df-gun.hit { stroke: #ff2a2a; }
+.df-reticle .df-lockbox.idle { stroke: #9a9a9a; }
+.df-reticle .df-lockbox.locking { stroke: #ffd400; }
+.df-reticle .df-lockbox.locked { stroke: #2bff5a; stroke-width: 3px; }
+.df-reticle .df-lockbox.hit { stroke: #ff2a2a; stroke-width: 3px; }

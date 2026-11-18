@@ -1,4 +1,4 @@
-import { JET_CATALOG, getJetDefinition, type JetDefinition } from '../entities/jet/jetCatalog';
+import { JET_CATALOG, type JetDefinition } from '../entities/jet/jetCatalog';
 import type { CourseLibrary } from '../race/CourseLibrary';
 import { courseSummary } from '../race/Course';
 import { GhostStore } from '../race/Ghost';
@@ -10,19 +10,29 @@ import type { Leaderboard } from '../race/Leaderboard';
 import type { SettingsStore } from '../settings/Settings';
 import { button, checkbox, choiceButton, h, markBack, select, slider } from './dom';
 import { HangarPreview } from './HangarPreview';
+import { hangarCustomize } from './HangarCustomize';
 import { jetHandling } from './jetHandling';
-import { findByKey, focusEl, focusInitial, focusKey, screenKey } from './menuFocus';
+import { findByKey, focusEl, focusInitial, focusKey, screenKey, setMenuNavHandler } from './menuFocus';
 import type { SettingsPanel } from './SettingsPanel';
+import type { LobbyMode } from '../net/lobbyTypes';
+import type { RaceDifficulty, RaceLayout } from '../race/generatedCourse';
+import { generateCourseForRequest } from '../race/CourseGenerator';
+import { randomSeedText, seedFromText } from '../utils/seed';
+import { CLASSIC_WORLD, type WorldSpec } from '../world/gen/WorldGenerator';
 import './menu.css';
 
 export interface MenuActions {
-  startFreeFlight(): void;
+  startFreeFlight(world: WorldSpec): void;
+  /** Built-in Classic Canyon course. */
   startRace(courseId: string): void;
+  /** Race generated from a seeded world. */
+  startGeneratedRace(world: WorldSpec, difficulty: RaceDifficulty, layout: RaceLayout, laps: number): void;
   /** Flight school lesson list. */
   openFlightSchool(): void;
   /** Practice setup (unranked gate sections), optionally preselecting a course. */
   openPractice(courseId?: string): void;
-  openMultiplayer(): void;
+  /** Multiplayer lobby browser; `mode` preselects the mode of a lobby created from it. */
+  openMultiplayer(mode?: LobbyMode): void;
   resume(): void;
   restart(): void;
   quitToMenu(): void;
@@ -32,15 +42,29 @@ export interface MenuActions {
 
 export const courseKey = (courseId: string, laps: number): string => `${courseId}@${laps}`;
 
+export interface AircraftSelectionOptions {
+  initialId: string;
+  allowPilotsChoice?: boolean;
+  onConfirm(id: string): string | null;
+  onBack(): void;
+}
+
 /** Main menu, sub-screens and the in-game pause menu. */
 export class MainMenu {
   private readonly root: HTMLDivElement;
   private selectedCourse = 'canyon-loop';
+  /** Invalidates pending generated-course previews when the setup screen is redrawn. */
+  private courseToken = 0;
   /** Per screen: the control that had focus when the screen was left (restored on return). */
   private readonly focusMemory = new Map<string, string>();
   private lastFocusKey = '';
   private lastFocused: HTMLElement | null = null;
   private preview: HangarPreview | null = null;
+  private hangarOpen = false;
+  private releaseHangarNav: (() => void) | null = null;
+
+  get hangarVisible(): boolean { return this.hangarOpen && this.visible; }
+  get currentPanel(): HTMLElement | null { return this.root.firstElementChild as HTMLElement | null; }
 
   constructor(
     container: HTMLElement,
@@ -89,6 +113,7 @@ export class MainMenu {
     if (!panel.classList.contains('hangar-panel')) this.closeHangar();
     this.root.classList.remove('hidden');
     this.root.classList.toggle('transparent', transparent);
+    this.root.classList.toggle('hangar-open', panel.classList.contains('hangar-panel'));
     this.root.replaceChildren(panel);
     // Returning to a screen (or re-rendering it) restores its focus; a new screen focuses its main control.
     const key = this.focusMemory.get(screenKey(panel));
@@ -105,23 +130,32 @@ export class MainMenu {
   }
 
   showMain(): void {
+    const action = (label: string, description: string, onClick: () => void, primary = false): HTMLButtonElement => {
+      const el = button(label, onClick, `menu-launch${primary ? ' primary' : ''}`);
+      el.setAttribute('aria-label', label);
+      el.replaceChildren(
+        h('span', { class: 'menu-launch-title' }, label),
+        h('span', { class: 'menu-launch-desc' }, description),
+      );
+      return el;
+    };
     this.show(
       h(
         'div',
-        { class: 'menu-panel' },
+        { class: 'menu-panel menu-home' },
+        h('p', { class: 'menu-eyebrow' }, 'FLIGHT DECK'),
         h('h1', {}, 'SKY FLIGHT RACING'),
         h('p', { class: 'menu-sub' }, 'Low-level jet racing. No rudder: bank and pull to turn.'),
         h(
           'div',
-          { class: 'menu-col' },
-          button('Free flight', () => this.actions.startFreeFlight(), 'primary'),
-          button('Race', () => this.showRaceSetup()),
-          button('Practice', () => this.actions.openPractice()),
-          button('Flight school', () => this.actions.openFlightSchool()),
-          button('Multiplayer', () => this.actions.openMultiplayer()),
-          button('Choose jet', () => this.showJetSelect()),
-          button('Leaderboards', () => this.showLeaderboards()),
-          button('Settings', () => this.show(this.settingsPanel.render(() => this.showMain()))),
+          { class: 'menu-launch-grid' },
+          action('Free flight', 'Your jet. Your world. No limits.', () => this.showFreeFlightSetup(), true),
+          action('Race', 'Chase gates. Beat the clock.', () => this.showRaceSetup()),
+          action('Practice', 'Build confidence. Find your line.', () => this.showPracticeMenu()),
+          action('Multiplayer', 'Share the skies with friends.', () => this.actions.openMultiplayer()),
+          action('Choose jet', 'Find your next airframe.', () => this.showJetSelect()),
+          action('Leaderboards', 'See how your best runs stack up.', () => this.showLeaderboards()),
+          action('Settings', 'Fine-tune your flight experience.', () => this.show(this.settingsPanel.render(() => this.showMain()))),
         ),
       ),
     );
@@ -139,7 +173,7 @@ export class MainMenu {
           { class: 'menu-col' },
           Object.assign(markBack(button('Resume', () => this.actions.resume(), 'primary')), { autofocus: true }),
           button(!multiplayer && inRace ? 'Restart race' : 'Respawn', () => this.actions.restart()),
-          button('Settings', () => this.show(this.settingsPanel.render(() => this.showPause(inRace, multiplayer)), true)),
+          button('Settings', () => this.show(this.settingsPanel.render(() => this.showPause(inRace, multiplayer), multiplayer), true)),
           multiplayer
             ? button('Back to lobby', () => this.actions.backToLobby())
             : button('Quit to main menu', () => this.actions.quitToMenu()),
@@ -149,53 +183,248 @@ export class MainMenu {
     );
   }
 
-  /** Hangar: rotating 3D preview, role and relative handling of the selected jet. */
-  private showJetSelect(): void {
+  /** Shared, transactional aircraft picker for the main menu and multiplayer callers. */
+  showJetSelect(options: AircraftSelectionOptions = {
+    initialId: this.settings.values.jetId,
+    onConfirm: (id) => {
+      const previous = this.settings.values.jetId;
+      this.settings.set('jetId', id);
+      const error = this.settings.lastSaveError;
+      if (error) {
+        this.settings.set('jetId', previous);
+        return `Could not remember your aircraft: ${error}`;
+      }
+      this.showMain();
+      return null;
+    },
+    onBack: () => this.showMain(),
+  }): void {
+    this.closeHangar();
     const preview = (this.preview ??= new HangarPreview());
     const view = h('div', { class: 'hangar-view' });
     const info = h('div', { class: 'hangar-info', 'aria-live': 'polite' });
-    const choices = JET_CATALOG.map((j) =>
-      choiceButton(
-        [h('b', {}, j.name), h('span', { class: 'hangar-role' }, roleOf(j)), h('span', { class: 'hangar-badge' }, 'Selected')],
-        false,
-        () => choose(j),
-        'hangar-choice',
-      ),
-    );
-    const choose = (def: JetDefinition): void => {
-      if (this.settings.values.jetId !== def.id) this.settings.set('jetId', def.id);
-      JET_CATALOG.forEach((j, i) => {
-        const on = j.id === def.id;
-        choices[i]!.setAttribute('aria-pressed', String(on));
-        choices[i]!.classList.toggle('selected', on);
-      });
-      info.replaceChildren(...hangarInfo(def));
-      if (preview.available) preview.setJet(def);
+    const status = h('p', { class: 'hangar-location', 'aria-live': 'polite' });
+    const error = h('p', { class: 'menu-error', role: 'alert' });
+    let index = Math.max(0, JET_CATALOG.findIndex((j) => j.id === options.initialId));
+    let pilotsChoice = !!options.allowPilotsChoice && options.initialId === '';
+    const choose = (delta: number): void => {
+      if (!pilotsChoice) index = Math.max(0, Math.min(JET_CATALOG.length - 1, index + delta));
+      pilotsChoice = false;
+      update();
+      if (preview.available) preview.select(index);
     };
+    const previous = button('Previous jet', () => choose(-1));
+    const next = button('Next jet', () => choose(1));
+    const confirm = button('Confirm aircraft', () => {
+      if (!this.hangarOpen) return;
+      error.textContent = options.onConfirm(pilotsChoice ? '' : JET_CATALOG[index]!.id) ?? '';
+    }, 'primary');
+    const stage = h('button', { type: 'button', class: 'hangar-inspect', 'data-autofocus': '', 'aria-label': 'Inspect aircraft. Left and right to browse; Enter or Space to confirm.', onclick: () => confirm.click() });
+    const pilotRule = options.allowPilotsChoice
+      ? choiceButton(["Pilot's choice"], pilotsChoice, () => { pilotsChoice = true; update(); }, 'hangar-pilot-rule')
+      : null;
+    const update = (): void => {
+      const def = JET_CATALOG[index]!;
+      previous.disabled = !pilotsChoice && index === 0;
+      next.disabled = !pilotsChoice && index === JET_CATALOG.length - 1;
+      pilotRule?.setAttribute('aria-pressed', String(pilotsChoice));
+      status.textContent = pilotsChoice ? "HOST RULE · Pilot's choice" : `HANGAR ${Math.floor(index / 2) + 1} / 3 · BAY ${index % 2 + 1} · ${index + 1} / ${JET_CATALOG.length}`;
+      info.replaceChildren(...(pilotsChoice
+        ? [h('h3', { class: 'hangar-name' }, "Pilot's choice"), h('p', {}, 'Each pilot chooses their own aircraft.')]
+        : hangarInfo(def)));
+      stage.setAttribute('aria-label', `${pilotsChoice ? "Pilot's choice" : def.name}. Left and right to browse; Enter or Space to confirm.`);
+      error.textContent = '';
+    };
+    const customize = options.allowPilotsChoice ? null : button('Customize', () => {
+      const bay = index;
+      const editor = hangarCustomize(JET_CATALOG[bay]!, (a) => preview.previewAppearance(bay, a), (saved) => {
+        panel.replaceChildren(view, header, stage, info, controls);
+        if (saved) status.textContent += ' · Appearance saved';
+        focusEl(customize);
+        enableBrowse();
+      });
+      this.releaseHangarNav?.();
+      this.releaseHangarNav = null;
+      update();
+      panel.replaceChildren(view, header, editor.panel, editor.controls);
+      focusEl(editor.panel.querySelector('select'));
+    });
+    const header = h('header', { class: 'hangar-header' }, h('h2', {}, 'Aircraft hangars'), status);
+    const controls = h('footer', { class: 'hangar-controls' }, error,
+      h('div', { class: 'menu-row' }, previous, next, pilotRule, customize, confirm, button('Back', () => { if (this.hangarOpen) options.onBack(); })),
+      h('p', { class: 'hangar-help' }, '← / → on aircraft to browse · Tab / d-pad to move · Enter / Space / A activate · Esc / B back'),
+    );
     const panel = h(
       'div',
       { class: 'menu-panel hangar-panel', 'data-screen': 'hangar' },
-      h('h2', {}, 'Hangar'),
-      h('p', { class: 'menu-sub' }, 'Choose your jet. Your choice is saved and used for your next flight.'),
-      h(
-        'div',
-        { class: 'hangar' },
-        h('div', { class: 'hangar-stage' }, view, info),
-        h('div', { class: 'hangar-list', role: 'group', 'aria-label': 'Aircraft' }, ...choices),
-      ),
-      h('div', { class: 'menu-row' }, button('Back', () => this.showMain(), 'primary')),
+      view,
+      header,
+      stage,
+      info,
+      controls,
     );
-    choose(getJetDefinition(this.settings.values.jetId));
+    update();
     this.show(panel);
-    preview.attach(view);
-    if (!preview.available) view.replaceChildren(h('p', { class: 'menu-sub' }, '3D preview unavailable.'));
+    this.hangarOpen = true;
+    const enableBrowse = (): void => {
+      this.releaseHangarNav = setMenuNavHandler(panel, (action) => {
+        if (document.activeElement !== stage || (action !== 'left' && action !== 'right')) return false;
+        choose(action === 'left' ? -1 : 1);
+        return true;
+      });
+    };
+    enableBrowse();
+    preview.attach(view, index);
+    if (!preview.available) view.replaceChildren(h('p', { class: 'hangar-unavailable', role: 'status' }, '3D hangar unavailable. Use Previous / Next to browse the aircraft information, then Confirm or Back.'));
   }
 
   private closeHangar(): void {
+    this.hangarOpen = false;
+    this.releaseHangarNav?.();
+    this.releaseHangarNav = null;
     this.preview?.detach();
   }
 
+  /** The world chosen for solo play (rolls and remembers a seed if none is set yet). */
+  private chosenWorld(): WorldSpec {
+    const s = this.settings.values;
+    if (s.worldSource === 'classic') return CLASSIC_WORLD;
+    if (!s.worldSeed.trim()) this.settings.set('worldSeed', randomSeedText());
+    return { kind: 'seeded', seed: seedFromText(s.worldSeed) };
+  }
+
+  /** "Seeded world" (seed text + Random) or "Classic Canyon"; `redraw` re-renders the screen. */
+  private worldChooser(redraw: () => void): HTMLElement {
+    const s = this.settings.values;
+    this.chosenWorld();
+    const seeded = s.worldSource === 'seeded';
+    const seedInput = h('input', { type: 'text', value: s.worldSeed, maxLength: 32, 'aria-label': 'World seed', spellcheck: false });
+    seedInput.addEventListener('change', () => {
+      this.settings.set('worldSeed', seedInput.value.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 32));
+      redraw();
+    });
+    return h(
+      'div',
+      { class: 'menu-col' },
+      select<'seeded' | 'classic'>('World', [['seeded', 'Seeded world'], ['classic', 'Classic Canyon']], () => s.worldSource, (v) => {
+        this.settings.set('worldSource', v);
+        redraw();
+      }),
+      seeded
+        ? h(
+            'div',
+            { class: 'menu-row', style: 'align-items:center;gap:8px' },
+            h('label', { class: 'menu-field', style: 'flex:1' }, h('span', {}, 'Seed'), seedInput),
+            button('Random', () => {
+              this.settings.set('worldSeed', randomSeedText());
+              redraw();
+            }, 'small'),
+          )
+        : null,
+      h(
+        'p',
+        { class: 'menu-sub' },
+        seeded
+          ? 'Every seed is its own endless world of valleys, mountains, rivers, oceans, roads and cities. Same seed = same world (share it with friends).'
+          : 'The original hand-made canyon with its built-in courses and records.',
+      ),
+    );
+  }
+
+  private showFreeFlightSetup(): void {
+    this.show(
+      h(
+        'div',
+        { class: 'menu-panel', 'data-screen': 'free-setup' },
+        h('h2', {}, 'Free flight'),
+        this.worldChooser(() => this.showFreeFlightSetup()),
+        checkbox('Start on the runway', () => this.settings.values.startOnRunway, (v) => this.settings.set('startOnRunway', v)),
+        h('div', { class: 'menu-row' }, button('Fly', () => this.actions.startFreeFlight(this.chosenWorld()), 'primary'), markBack(button('Back', () => this.showMain()))),
+      ),
+    );
+  }
+
+  /** Practice: choose between the guided flight school and free gate-section practice. */
+  showPracticeMenu(): void {
+    this.show(
+      h(
+        'div',
+        { class: 'menu-panel', 'data-screen': 'practice-menu' },
+        h('h2', {}, 'Practice'),
+        h('p', { class: 'menu-sub' }, 'Unranked training: nothing here affects your records.'),
+        h(
+          'div',
+          { class: 'menu-col' },
+          button('Flight school', () => this.actions.openFlightSchool(), 'primary'),
+          h('p', { class: 'menu-sub' }, 'Guided lessons, from the basics to advanced manoeuvres.'),
+          button('Gate sections', () => this.actions.openPractice()),
+          h('p', { class: 'menu-sub' }, 'Pick a course section and fly it again and again.'),
+        ),
+        h('div', { class: 'menu-row' }, markBack(button('Back', () => this.showMain()))),
+      ),
+    );
+  }
+
   private showRaceSetup(): void {
+    if (this.settings.values.worldSource === 'seeded') this.showGeneratedRaceSetup();
+    else this.showClassicRaceSetup();
+  }
+
+  /** Race on a seeded world: the course is generated from the seed, difficulty and layout. */
+  private showGeneratedRaceSetup(): void {
+    const s = this.settings.values;
+    const redraw = (): void => this.showRaceSetup();
+    const courseName = h('h3', { class: 'menu-sub', style: 'margin:6px 0 2px' }, 'Generating course…');
+    const preview = h('canvas', { width: 240, height: 170, class: 'course-preview', 'aria-label': 'Top-down map of the generated course', style: 'border-radius:6px;max-width:100%' });
+    const facts = h('div', { class: 'menu-sub', style: 'text-align:left;line-height:1.5' });
+    const token = ++this.courseToken;
+    // Generation takes a moment the first time (cached afterwards): let the screen paint first.
+    setTimeout(() => {
+      if (token !== this.courseToken || !courseName.isConnected) return;
+      try {
+        const def = generateCourseForRequest({ world: this.chosenWorld(), difficulty: s.raceDifficulty, layout: s.raceLayout });
+        const sum = courseSummary(def, s.raceLayout === 'loop' ? s.laps : 1);
+        courseName.textContent = def.name;
+        drawCoursePreview(preview, def);
+        facts.textContent = `${sum.gatesPerLap} gates · ${(sum.raceLength / 1000).toFixed(1)} km · about ${Math.round(sum.estimatedDuration)} s`;
+      } catch (err) {
+        console.warn('Course generation failed', err);
+        courseName.textContent = 'Course generation failed for this seed';
+      }
+    }, 30);
+    this.show(
+      h(
+        'div',
+        { class: 'menu-panel', 'data-screen': 'race-setup' },
+        h('h2', {}, 'Race'),
+        this.worldChooser(redraw),
+        select<RaceDifficulty>('Difficulty', [['easy', 'Easy'], ['medium', 'Medium'], ['hard', 'Hard']], () => s.raceDifficulty, (v) => {
+          this.settings.set('raceDifficulty', v);
+          redraw();
+        }),
+        select<RaceLayout>('Layout', [['loop', 'Loop (laps)'], ['sprint', 'Sprint (point to point)']], () => s.raceLayout, (v) => {
+          this.settings.set('raceLayout', v);
+          redraw();
+        }),
+        s.raceLayout === 'loop' ? slider('Laps', 1, 5, 1, () => s.laps, (v) => this.settings.set('laps', v)) : null,
+        h('p', { class: 'menu-sub' }, 'A challenging course is generated for this seed through its valleys, canyons, rivers, under bridges and between towers. Same seed + difficulty + layout = the same course.'),
+        courseName,
+        preview,
+        facts,
+        slider('AI opponents', 0, 5, 1, () => s.aiOpponents, (v) => this.settings.set('aiOpponents', v)),
+        slider('AI skill', 0.2, 1, 0.05, () => s.aiSkill, (v) => this.settings.set('aiSkill', v), (v) => `${Math.round(v * 100)}%`),
+        checkbox('Race against my best ghost', () => s.showGhost, (v) => this.settings.set('showGhost', v)),
+        h(
+          'div',
+          { class: 'menu-row' },
+          button('Start race', () => this.actions.startGeneratedRace(this.chosenWorld(), s.raceDifficulty, s.raceLayout, s.raceLayout === 'loop' ? s.laps : 1), 'primary'),
+          markBack(button('Back', () => this.showMain())),
+        ),
+      ),
+    );
+  }
+
+  private showClassicRaceSetup(): void {
     const s = this.settings.values;
     const all = this.courses.all();
     if (!all.some((c) => c.id === this.selectedCourse)) this.selectedCourse = all[0]!.id;
@@ -251,8 +480,9 @@ export class MainMenu {
     this.show(
       h(
         'div',
-        { class: 'menu-panel' },
+        { class: 'menu-panel', 'data-screen': 'race-setup' },
         h('h2', {}, 'Race'),
+        this.worldChooser(() => this.showRaceSetup()),
         select('Course', all.map((c) => [c.id, `${c.name}${c.loop ? ' (loop)' : ''}`]), () => this.selectedCourse, (v) => {
           this.selectedCourse = v;
           this.showRaceSetup();
@@ -336,9 +566,6 @@ export class MainMenu {
     );
   }
 }
-
-/** Short role from the catalog description ("Heavy interceptor: ..." -> "Heavy interceptor"). */
-const roleOf = (j: JetDefinition): string => j.description.split(/[.:]/)[0]!.trim();
 
 function hangarInfo(def: JetDefinition): Node[] {
   const traits = jetHandling(def);

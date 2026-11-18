@@ -4,6 +4,12 @@
  */
 export type MenuNavAction = 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back';
 type Direction = 'up' | 'down' | 'left' | 'right';
+const menuNavHandlers = new WeakMap<HTMLElement, (action: MenuNavAction) => boolean>();
+
+export function setMenuNavHandler(panel: HTMLElement, handler: (action: MenuNavAction) => boolean): () => void {
+  menuNavHandlers.set(panel, handler);
+  return () => { menuNavHandlers.delete(panel); };
+}
 
 const FOCUSABLE = [
   'button:not([disabled])',
@@ -140,6 +146,8 @@ export function backButton(root: ParentNode): HTMLElement | undefined {
 /** Applies one navigation action to the visible menu. Returns true when it was handled. */
 export function handleMenuNav(action: MenuNavAction, root: HTMLElement | null = activeMenuRoot()): boolean {
   if (!root) return false;
+  const panel = root.firstElementChild;
+  if (panel instanceof HTMLElement && menuNavHandlers.get(panel)?.(action)) return true;
   const active = document.activeElement as HTMLElement | null;
   const inside = !!active && root.contains(active) && active !== root;
   if (action === 'back') {
@@ -186,6 +194,13 @@ export function installMenuKeyboard(isCapturing: () => boolean = () => false): (
     if (e.defaultPrevented || isCapturing()) return;
     const root = activeMenuRoot();
     if (!root) return;
+    const panel = root.firstElementChild;
+    if (panel instanceof HTMLElement && menuNavHandlers.has(panel) && (e.key === 'Enter' || e.key === ' ')) {
+      if (!e.repeat) handleMenuNav('confirm', root);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (e.key === 'Escape') {
       if (root.classList.contains('transparent')) return;
       if (handleMenuNav('back', root)) {

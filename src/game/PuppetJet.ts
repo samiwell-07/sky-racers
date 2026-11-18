@@ -1,6 +1,7 @@
 import { Mesh, type Material, type Object3D, type Quaternion, type Vector3 } from 'three';
 import { createFlightConfig } from '../config/flightConfig';
 import { Jet } from '../entities/jet/Jet';
+import { FACTORY_APPEARANCE, type JetAppearance } from '../entities/jet/jetAppearance';
 import type { JetDefinition } from '../entities/jet/jetCatalog';
 
 /**
@@ -11,8 +12,8 @@ export class PuppetJet {
   readonly jet: Jet;
   private readonly clones: Material[] = [];
 
-  constructor(definition: JetDefinition, parent: Object3D, opacity = 1) {
-    this.jet = new Jet(definition, createFlightConfig(definition.flight), false);
+  constructor(definition: JetDefinition, parent: Object3D, opacity = 1, appearance: JetAppearance = FACTORY_APPEARANCE) {
+    this.jet = new Jet(definition, createFlightConfig(definition.flight), false, appearance);
     if (opacity < 1) {
       this.jet.object.traverse((o) => {
         const mesh = o as Mesh;

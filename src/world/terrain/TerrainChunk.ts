@@ -1,12 +1,18 @@
-import { BufferAttribute, BufferGeometry, Mesh, Sphere, Box3, Vector3, type Material } from 'three';
+import { BufferAttribute, BufferGeometry, Mesh, Object3D, Sphere, Box3, Vector3, type Material } from 'three';
 import type { TerrainConfig } from '../../config/worldConfig';
+import { createWaterMesh, disposeWaterMesh } from '../water/water';
 import { chunkIndices, type ChunkArrays } from './chunkMeshData';
 
 const indexAttributes = new Map<number, BufferAttribute>();
 
-/** One square of streamed terrain at a given level of detail, built from precomputed vertex data. */
+/**
+ * One square of streamed terrain at a given level of detail, built from precomputed vertex data:
+ * the ground mesh and, where the chunk has water, a water mesh. Add `object` (both) to the scene.
+ */
 export class TerrainChunk {
+  readonly object = new Object3D();
   readonly mesh: Mesh;
+  readonly water: Mesh<BufferGeometry, Material> | null;
 
   constructor(
     readonly cx: number,
@@ -26,6 +32,7 @@ export class TerrainChunk {
     geometry.setAttribute('position', new BufferAttribute(data.positions, 3));
     geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
     geometry.setAttribute('uv', new BufferAttribute(data.uvs, 2));
+    geometry.setAttribute('surface', new BufferAttribute(data.surface, 2));
     // All chunks of the same LOD share one index buffer.
     geometry.setIndex(index);
     const size = cfg.chunkSize;
@@ -35,11 +42,23 @@ export class TerrainChunk {
     this.mesh.receiveShadow = true;
     this.mesh.matrixAutoUpdate = false;
     this.mesh.updateMatrix();
+    this.object.name = `terrain-${cx},${cz}`;
+    this.object.matrixAutoUpdate = false;
+    this.object.add(this.mesh);
+
+    this.water = data.water ? createWaterMesh(data.water) : null;
+    if (this.water) {
+      this.water.matrixAutoUpdate = false;
+      this.water.updateMatrix();
+      this.object.add(this.water);
+    }
   }
 
   dispose(): void {
     // Detach the shared index first: disposing a geometry frees its index buffer on the GPU.
     this.mesh.geometry.setIndex(null);
     this.mesh.geometry.dispose();
+    // Keeps the water material shared by every chunk alive.
+    if (this.water) disposeWaterMesh(this.water);
   }
 }

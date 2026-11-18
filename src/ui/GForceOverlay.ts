@@ -11,6 +11,7 @@ export class GForceOverlay {
   private readonly tolerance = new GTolerance();
   private lastBlackout = -1;
   private lastRedout = -1;
+  private out = false;
 
   constructor(container: HTMLElement) {
     const layer = (): HTMLDivElement => {
@@ -37,11 +38,22 @@ export class GForceOverlay {
     container.appendChild(this.element);
   }
 
+  /** G-LOC: the pilot has passed out and must not control the jet. */
+  get unconscious(): boolean {
+    return this.tolerance.unconscious;
+  }
+
   update(gLoad: number, dt: number): void {
-    const { blackout, redout } = this.tolerance.update(gLoad, dt);
+    const { blackout, redout, unconscious } = this.tolerance.update(gLoad, dt);
+    if (unconscious !== this.out) {
+      this.out = unconscious;
+      // Out cold: cover the HUD too (menus, z-index 20, stay on top).
+      this.element.style.zIndex = unconscious ? '15' : '1';
+      this.lastBlackout = -1;
+    }
     if (Math.abs(blackout - this.lastBlackout) > 0.002) {
       this.lastBlackout = blackout;
-      this.applyBlackout(blackout);
+      this.applyBlackout(blackout, unconscious);
     }
     if (Math.abs(redout - this.lastRedout) > 0.002) {
       this.lastRedout = redout;
@@ -49,8 +61,14 @@ export class GForceOverlay {
     }
   }
 
-  private applyBlackout(b: number): void {
+  private applyBlackout(b: number, unconscious = false): void {
     const s = this.dark.style;
+    if (unconscious) {
+      s.background = '#000';
+      s.backdropFilter = 'none';
+      s.opacity = '1';
+      return;
+    }
     if (b <= 0.001) {
       s.opacity = '0';
       s.background = 'none';
@@ -87,6 +105,8 @@ export class GForceOverlay {
     this.tolerance.reset();
     this.lastBlackout = -1;
     this.lastRedout = -1;
+    this.out = false;
+    this.element.style.zIndex = '1';
     this.applyBlackout(0);
     this.applyRedout(0);
   }

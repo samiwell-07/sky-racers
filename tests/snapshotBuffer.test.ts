@@ -4,7 +4,7 @@ import { SnapshotBuffer, type Snapshot } from '../src/net/SnapshotBuffer';
 const SQRT1_2 = Math.SQRT1_2;
 
 function snap(time: number, x: number, quaternion: Snapshot['quaternion'] = [0, 0, 0, 1]): Snapshot {
-  return { time, position: [x, 0, 0], quaternion, throttle: x / 100, afterburner: x >= 50 };
+  return { time, position: [x, 0, 0], quaternion, velocity: [x * 2, 0, -x], throttle: x / 100, afterburner: x >= 50 };
 }
 
 describe('SnapshotBuffer', () => {
@@ -19,6 +19,8 @@ describe('SnapshotBuffer', () => {
     const s = buf.sample(150)!; // render time 50 → halfway
     expect(s.position[0]).toBeCloseTo(50);
     expect(s.throttle).toBeCloseTo(0.5);
+    expect(s.velocity[0]).toBeCloseTo(100);
+    expect(s.velocity[2]).toBeCloseTo(-50);
     const half = Math.sin(Math.PI / 8);
     expect(s.quaternion[1]).toBeCloseTo(half);
     expect(s.quaternion[3]).toBeCloseTo(Math.cos(Math.PI / 8));
@@ -37,6 +39,7 @@ describe('SnapshotBuffer', () => {
     buf.push(snap(100, 100));
     expect(buf.sample(130)!.position[0]).toBeCloseTo(130);
     expect(buf.sample(1000)!.position[0]).toBeCloseTo(150);
+    expect(buf.sample(1000)!.velocity[0]).toBeCloseTo(200); // newest velocity, not extrapolated
   });
 
   it('handles out-of-order snapshots', () => {
